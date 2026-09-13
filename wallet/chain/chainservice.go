@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"time"
 
 	"github.com/pearl-research-labs/pearl/node/btcutil"
 	"github.com/pearl-research-labs/pearl/node/btcutil/gcs"
@@ -28,6 +29,8 @@ type NeutrinoChainService interface {
 	GetBlockHeader(*chainhash.Hash) (*wire.BlockHeader, error)
 	IsCurrent() bool
 	SendTransaction(*wire.MsgTx) error
+	LastRelayed(chainhash.Hash) (time.Time, bool)
+	ForgetTransaction(chainhash.Hash)
 	GetCFilter(chainhash.Hash, wire.FilterType,
 		...neutrino.QueryOption) (*gcs.Filter, error)
 	GetUtxo(...neutrino.RescanOption) (*neutrino.SpendReport, error)

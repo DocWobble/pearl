@@ -104,3 +104,46 @@ func TestPublishTransactionNotRelayed(t *testing.T) {
 		require.True(t, hasOutPoint(unspent, fundingOut))
 	})
 }
+
+// TestResendAfterRescanBackendGate checks that the post-rescan resend reaches
+// a full-node backend and never an SPV one.
+func TestResendAfterRescanBackendGate(t *testing.T) {
+	tests := []struct {
+		backEnd     string
+		wantResends int
+	}{
+		{backEnd: "btcd", wantResends: 1},
+		{backEnd: "neutrino", wantResends: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.backEnd, func(t *testing.T) {
+			w, cleanup := testWallet(t)
+			t.Cleanup(cleanup)
+			w.chainClient = &mockChainClient{
+				sendRawTransactionFunc: sendResult(nil),
+			}
+			fundWallet(t, w, 100_000)
+
+			_, err := w.SendOutputs(
+				[]*wire.TxOut{externalTaprootOutput(t, 50_000)},
+				nil, 0, 1, 1000, CoinSelectionLargest, "",
+			)
+			require.NoError(t, err)
+
+			var resends int
+			w.chainClient = &mockChainClient{
+				backEnd: tc.backEnd,
+				sendRawTransactionFunc: func(tx *wire.MsgTx) (
+					*chainhash.Hash, error) {
+
+					resends++
+					return sendResult(nil)(tx)
+				},
+			}
+			w.resendUnminedTxsAfterRescan()
+
+			require.Equal(t, tc.wantResends, resends)
+		})
+	}
+}

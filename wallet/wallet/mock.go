@@ -18,6 +18,7 @@ type mockChainClient struct {
 	getBlockHashFunc       func() (*chainhash.Hash, error)
 	getBlockHeader         *wire.BlockHeader
 	sendRawTransactionFunc func(*wire.MsgTx) (*chainhash.Hash, error)
+	backEnd                string
 }
 
 var _ chain.Interface = (*mockChainClient)(nil)
@@ -95,6 +96,9 @@ func (m *mockChainClient) Notifications() <-chan interface{} {
 }
 
 func (m *mockChainClient) BackEnd() string {
+	if m.backEnd != "" {
+		return m.backEnd
+	}
 	return "mock"
 }
 
