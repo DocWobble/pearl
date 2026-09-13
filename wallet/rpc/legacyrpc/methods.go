@@ -123,10 +123,12 @@ var rpcHandlers = map[string]struct {
 	"setaccount":    {handler: unsupported, noHelp: true},
 
 	// Extensions to the reference client JSON-RPC API
-	"chainsynced":      {handler: chainSynced},
-	"getsyncprogress":  {handler: getSyncProgress},
-	"createnewaccount": {handler: createNewAccount},
-	"getbestblock":     {handler: getBestBlock},
+	"chainsynced":            {handler: chainSynced},
+	"getsyncprogress":        {handler: getSyncProgress},
+	"removetransaction":      {handler: removeTransaction},
+	"rebroadcasttransaction": {handler: rebroadcastTransaction},
+	"createnewaccount":       {handler: createNewAccount},
+	"getbestblock":           {handler: getBestBlock},
 	// This was an extension but the reference implementation added it as
 	// well, but with a different API (no account parameter).  It's listed
 	// here because it hasn't been update to use the reference
@@ -382,6 +384,94 @@ func getSyncProgress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		Connections:        sp.Connections,
 		Synced:             w.ChainSynced(),
 	}, nil
+}
+
+// pendingTxHash parses a txid argument for the pending-transaction commands.
+func pendingTxHash(txID string) (*chainhash.Hash, error) {
+	txHash, err := chainhash.NewHashFromStr(txID)
+	if err != nil {
+		return nil, &btcjson.RPCError{
+			Code:    btcjson.ErrRPCDecodeHexString,
+			Message: "Transaction hash string decode failed: " + err.Error(),
+		}
+	}
+	return txHash, nil
+}
+
+// pendingTxError maps the wallet's pending-transaction errors to RPC errors.
+func pendingTxError(err error) error {
+	switch {
+	case errors.Is(err, wallet.ErrNoTx):
+		return &ErrNoTransactionInfo
+	case errors.Is(err, wallet.ErrTxConfirmed):
+		return &btcjson.RPCError{
+			Code:    btcjson.ErrRPCInvalidParameter,
+			Message: err.Error(),
+		}
+	default:
+		return &btcjson.RPCError{
+			Code:    btcjson.ErrRPCInternal.Code,
+			Message: err.Error(),
+		}
+	}
+}
+
+// removeTransaction handles a removetransaction request by forgetting a
+// pending transaction and its pending dependents so their inputs can be spent
+// again.
+func removeTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
+	cmd := icmd.(*btcjson.RemoveTransactionCmd)
+
+	txHash, err := pendingTxHash(cmd.TxID)
+	if err != nil {
+		return nil, err
+	}
+
+	removed, err := w.RemoveTransaction(*txHash)
+	if err != nil {
+		return nil, pendingTxError(err)
+	}
+
+	log.Infof("Removed pending transaction %v and %d dependents", txHash,
+		len(removed)-1)
+
+	return &btcjson.RemoveTransactionResult{
+		Removed: hashStrings(removed),
+	}, nil
+}
+
+// rebroadcastTransaction handles a rebroadcasttransaction request by
+// announcing a pending transaction, and its pending ancestors, to the network
+// again.
+func rebroadcastTransaction(icmd interface{}, w *wallet.Wallet) (interface{},
+	error) {
+
+	cmd := icmd.(*btcjson.RebroadcastTransactionCmd)
+
+	txHash, err := pendingTxHash(cmd.TxID)
+	if err != nil {
+		return nil, err
+	}
+
+	announced, err := w.RebroadcastTransaction(*txHash)
+	if err != nil {
+		return nil, pendingTxError(err)
+	}
+
+	log.Infof("Rebroadcast pending transaction %v (%d announced)", txHash,
+		len(announced))
+
+	return &btcjson.RebroadcastTransactionResult{
+		Announced: hashStrings(announced),
+	}, nil
+}
+
+func hashStrings(hashes []chainhash.Hash) []string {
+	strs := make([]string, len(hashes))
+	for i := range hashes {
+		strs[i] = hashes[i].String()
+	}
+	return strs
 }
 
 // getInfo handles a getinfo request by returning the a structure containing
@@ -737,6 +827,11 @@ func getTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		ret.BlockHash = details.Block.Hash.String()
 		ret.BlockTime = details.Block.Time.Unix()
 		ret.Confirmations = int64(confirms(details.Block.Height, syncBlock.Height))
+	} else if status := w.RelayStatus(*txHash); status.Tracked {
+		ret.Relayed = &status.Relayed
+		if status.Relayed {
+			ret.LastRelayTime = status.LastRelayed.Unix()
+		}
 	}
 
 	var (
