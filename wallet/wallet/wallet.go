@@ -2204,15 +2204,18 @@ func RecvCategory(details *wtxmgr.TxDetails, syncHeight int32, net *chaincfg.Par
 // for a listtransactions RPC.
 //
 // TODO: This should be moved to the legacyrpc package.
-func listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails, addrMgr *waddrmgr.Manager,
-	syncHeight int32, net *chaincfg.Params) []btcjson.ListTransactionsResult {
+func (w *Wallet) listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails,
+	syncHeight int32) []btcjson.ListTransactionsResult {
 
+	addrMgr, net := w.Manager, w.chainParams
 	addrmgrNs := tx.ReadBucket(waddrmgrNamespaceKey)
 
 	var (
 		blockHashStr  string
 		blockTime     int64
 		confirmations int64
+		relayed       *bool
+		lastRelayTime int64
 	)
 	if details.Block.Height != -1 {
 		blockHashStr = details.Block.Hash.String()
@@ -2220,6 +2223,11 @@ func listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails, addrMgr *wa
 		confirmations = int64(
 			calcConf(details.Block.Height, syncHeight),
 		)
+	} else if status := w.RelayStatus(details.Hash); status.Tracked {
+		relayed = &status.Relayed
+		if status.Relayed {
+			lastRelayTime = status.LastRelayed.Unix()
+		}
 	}
 
 	results := []btcjson.ListTransactionsResult{}
@@ -2302,6 +2310,8 @@ outputs:
 			WalletConflicts: []string{},
 			Time:            received,
 			TimeReceived:    received,
+			Relayed:         relayed,
+			LastRelayTime:   lastRelayTime,
 		}
 
 		// Add a received/generated/immature result if this is a credit.
@@ -2343,9 +2353,8 @@ func (w *Wallet) ListSinceBlock(start, end, syncHeight int32) ([]btcjson.ListTra
 			for _, detail := range details {
 				detail := detail
 
-				jsonResults := listTransactions(
-					tx, &detail, w.Manager, syncHeight,
-					w.chainParams,
+				jsonResults := w.listTransactions(
+					tx, &detail, syncHeight,
 				)
 				txList = append(txList, jsonResults...)
 			}
@@ -2391,8 +2400,8 @@ func (w *Wallet) ListTransactions(from, count int) ([]btcjson.ListTransactionsRe
 					return true, nil
 				}
 
-				jsonResults := listTransactions(tx, &details[i],
-					w.Manager, syncBlock.Height, w.chainParams)
+				jsonResults := w.listTransactions(tx, &details[i],
+					syncBlock.Height)
 				txList = append(txList, jsonResults...)
 
 				if len(jsonResults) > 0 {
@@ -2443,8 +2452,8 @@ func (w *Wallet) ListAddressTransactions(pkHashes map[string]struct{}) ([]btcjso
 						continue
 					}
 
-					jsonResults := listTransactions(tx, detail,
-						w.Manager, syncBlock.Height, w.chainParams)
+					jsonResults := w.listTransactions(tx, detail,
+						syncBlock.Height)
 					txList = append(txList, jsonResults...)
 					continue loopDetails
 				}
@@ -2475,8 +2484,8 @@ func (w *Wallet) ListAllTransactions() ([]btcjson.ListTransactionsResult, error)
 			// unsorted, but it will process mined transactions in the
 			// reverse order they were marked mined.
 			for i := len(details) - 1; i >= 0; i-- {
-				jsonResults := listTransactions(tx, &details[i], w.Manager,
-					syncBlock.Height, w.chainParams)
+				jsonResults := w.listTransactions(tx, &details[i],
+					syncBlock.Height)
 				txList = append(txList, jsonResults...)
 			}
 			return false, nil

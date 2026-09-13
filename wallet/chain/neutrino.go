@@ -72,7 +72,10 @@ type NeutrinoClient struct {
 
 // A compile-time check to ensure that RPCClient satisfies the chain.Interface
 // interface.
-var _ Interface = (*NeutrinoClient)(nil)
+var (
+	_ Interface        = (*NeutrinoClient)(nil)
+	_ BroadcastTracker = (*NeutrinoClient)(nil)
+)
 
 // NewNeutrinoClient creates a new NeutrinoClient struct with a backing
 // ChainService.
@@ -245,6 +248,20 @@ func (s *NeutrinoClient) SendRawTransaction(tx *wire.MsgTx, allowHighFees bool) 
 	}
 	hash := tx.TxHash()
 	return &hash, nil
+}
+
+// LastRelayed replicates the chain service's LastRelayed method.
+//
+// NOTE: This is part of the BroadcastTracker interface.
+func (s *NeutrinoClient) LastRelayed(txHash chainhash.Hash) (time.Time, bool) {
+	return s.CS.LastRelayed(txHash)
+}
+
+// ForgetTransaction replicates the chain service's ForgetTransaction method.
+//
+// NOTE: This is part of the BroadcastTracker interface.
+func (s *NeutrinoClient) ForgetTransaction(txHash chainhash.Hash) {
+	s.CS.ForgetTransaction(txHash)
 }
 
 // TestMempoolAcceptCmd returns result of mempool acceptance tests indicating
