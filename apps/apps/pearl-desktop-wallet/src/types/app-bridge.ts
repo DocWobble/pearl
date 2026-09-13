@@ -41,13 +41,10 @@ interface WalletApi {
 
   sendFromDefaultAccount: (toAddress: string, amount: number, feeRate: number) => Promise<string>;
 
-  // Forgets a pending transaction and its pending dependents; resolves to
-  // the removed txids, the requested one first. Never call without the
-  // user's explicit confirmation: a peer may already hold the transaction.
+  // Never call without the user's explicit confirmation: a peer may already
+  // hold the transaction, so spending its freed inputs is a double spend.
   removeTransaction: (txid: string) => Promise<string[]>;
 
-  // Announces a pending transaction again, pending ancestors first; resolves
-  // to the txids a peer requested.
   rebroadcastTransaction: (txid: string) => Promise<string[]>;
 
   listAllTransactions: () => Promise<Transaction[]>;

@@ -15,10 +15,9 @@ import (
 // way the SPV backend does. Existing tests keep using the plain mock so they
 // exercise the "backend offers no evidence" path.
 type trackingChainClient struct {
-	*mockChainClient
+	mockChainClient
 
-	relayed   map[chainhash.Hash]time.Time
-	forgotten []chainhash.Hash
+	relayed map[chainhash.Hash]time.Time
 }
 
 var (
@@ -26,20 +25,12 @@ var (
 	_ chain.BroadcastTracker = (*trackingChainClient)(nil)
 )
 
-func newTrackingChainClient(sendErr error) *trackingChainClient {
-	c := &trackingChainClient{
-		mockChainClient: &mockChainClient{},
-		relayed:         make(map[chainhash.Hash]time.Time),
-	}
-	c.sendRawTransactionFunc = func(tx *wire.MsgTx) (*chainhash.Hash,
-		error) {
-
-		if sendErr != nil {
-			return nil, sendErr
-		}
+func newTrackingChainClient() *trackingChainClient {
+	c := &trackingChainClient{relayed: make(map[chainhash.Hash]time.Time)}
+	send := sendResult(nil)
+	c.sendRawTransactionFunc = func(tx *wire.MsgTx) (*chainhash.Hash, error) {
 		c.relayed[tx.TxHash()] = time.Now()
-		hash := tx.TxHash()
-		return &hash, nil
+		return send(tx)
 	}
 	return c
 }
@@ -53,7 +44,6 @@ func (c *trackingChainClient) LastRelayed(txHash chainhash.Hash) (time.Time,
 
 func (c *trackingChainClient) ForgetTransaction(txHash chainhash.Hash) {
 	delete(c.relayed, txHash)
-	c.forgotten = append(c.forgotten, txHash)
 }
 
 // sendTo spends from the wallet to an external output. minconf 0 lets a
@@ -78,7 +68,7 @@ func pendingChain(t *testing.T) (*Wallet, *trackingChainClient,
 
 	w, cleanup := testWallet(t)
 	t.Cleanup(cleanup)
-	client := newTrackingChainClient(nil)
+	client := newTrackingChainClient()
 	w.chainClient = client
 	fundingOut := fundWallet(t, w, 100_000)
 
@@ -108,9 +98,10 @@ func TestRemoveTransaction(t *testing.T) {
 		require.True(t, hasOutPoint(unspent, fundingOut))
 		require.Len(t, unspent, 1)
 
-		require.ElementsMatch(t, removed, client.forgotten)
-		_, ok := client.LastRelayed(parent.TxHash())
-		require.False(t, ok)
+		for _, hash := range removed {
+			_, ok := client.LastRelayed(hash)
+			require.False(t, ok, "relay evidence for %v must be dropped", hash)
+		}
 	})
 
 	t.Run("removing the child keeps the parent", func(t *testing.T) {
@@ -257,9 +248,6 @@ func TestRelayStatusInListings(t *testing.T) {
 			require.False(t, *relayed)
 		}
 		require.Zero(t, lastRelay[parent.TxHash().String()])
-
-		status := w.RelayStatus(parent.TxHash())
-		require.Equal(t, RelayStatus{Tracked: true}, status)
 	})
 
 	t.Run("relayed transaction carries the time", func(t *testing.T) {
@@ -279,11 +267,6 @@ func TestRelayStatusInListings(t *testing.T) {
 			require.NotZero(t, r.LastRelayTime)
 		}
 		require.True(t, seen)
-
-		status := w.RelayStatus(child.TxHash())
-		require.True(t, status.Tracked)
-		require.True(t, status.Relayed)
-		require.False(t, status.LastRelayed.IsZero())
 	})
 
 	t.Run("non-tracking backend omits the fields", func(t *testing.T) {
@@ -300,11 +283,12 @@ func TestRelayStatusInListings(t *testing.T) {
 			require.Zero(t, r.LastRelayTime)
 		}
 
-		require.Equal(t, RelayStatus{}, w.RelayStatus(tx.TxHash()))
+		_, _, ok := w.RelayStatus(tx.TxHash())
+		require.False(t, ok)
 	})
 }
 
-func TestDependentTxHashes(t *testing.T) {
+func TestUnminedAncestry(t *testing.T) {
 	spend := func(lockTime uint32, parents ...chainhash.Hash) *wire.MsgTx {
 		tx := wire.NewMsgTx(wire.TxVersion)
 		tx.LockTime = lockTime
@@ -314,23 +298,13 @@ func TestDependentTxHashes(t *testing.T) {
 		return tx
 	}
 
-	root := chainhash.Hash{0xaa}
-	a := spend(1, root)
+	a := spend(1, chainhash.Hash{0xaa})
 	b := spend(2, a.TxHash())
 	c := spend(3, b.TxHash(), chainhash.Hash{0xbb})
 	unrelated := spend(4, chainhash.Hash{0xcc})
+	unmined := []*wire.MsgTx{a, unrelated, b, c}
 
-	// Listed child-before-parent so the fixpoint has to take more than
-	// one pass.
-	unmined := []*wire.MsgTx{c, unrelated, b, a}
-
-	got := dependentTxHashes(root, unmined)
-	require.Equal(t, root, got[0])
-	require.ElementsMatch(t,
-		[]chainhash.Hash{root, a.TxHash(), b.TxHash(), c.TxHash()}, got,
-	)
-
-	sorted := unminedAncestry(c, unmined)
-	require.Equal(t, []*wire.MsgTx{a, b, c}, sorted)
-	require.Equal(t, []*wire.MsgTx{a}, unminedAncestry(a, unmined))
+	require.Equal(t, []*wire.MsgTx{a, b, c}, unminedAncestry(c.TxHash(), unmined))
+	require.Equal(t, []*wire.MsgTx{a}, unminedAncestry(a.TxHash(), unmined))
+	require.Empty(t, unminedAncestry(chainhash.Hash{0xdd}, unmined))
 }

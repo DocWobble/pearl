@@ -386,8 +386,8 @@ func getSyncProgress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	}, nil
 }
 
-// pendingTxHash parses a txid argument for the pending-transaction commands.
-func pendingTxHash(txID string) (*chainhash.Hash, error) {
+// decodeTxHash parses a txid parameter.
+func decodeTxHash(txID string) (*chainhash.Hash, error) {
 	txHash, err := chainhash.NewHashFromStr(txID)
 	if err != nil {
 		return nil, &btcjson.RPCError{
@@ -399,15 +399,14 @@ func pendingTxHash(txID string) (*chainhash.Hash, error) {
 }
 
 // pendingTxError maps the wallet's pending-transaction errors to RPC errors.
+// Anything else, including a not-relayed verdict, becomes an internal error
+// carrying the reason, the same as sendmany reports it.
 func pendingTxError(err error) error {
 	switch {
 	case errors.Is(err, wallet.ErrNoTx):
 		return &ErrNoTransactionInfo
 	case errors.Is(err, wallet.ErrTxConfirmed):
-		return &btcjson.RPCError{
-			Code:    btcjson.ErrRPCInvalidParameter,
-			Message: err.Error(),
-		}
+		return InvalidParameterError{err}
 	default:
 		return &btcjson.RPCError{
 			Code:    btcjson.ErrRPCInternal.Code,
@@ -422,7 +421,7 @@ func pendingTxError(err error) error {
 func removeTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	cmd := icmd.(*btcjson.RemoveTransactionCmd)
 
-	txHash, err := pendingTxHash(cmd.TxID)
+	txHash, err := decodeTxHash(cmd.TxID)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +447,7 @@ func rebroadcastTransaction(icmd interface{}, w *wallet.Wallet) (interface{},
 
 	cmd := icmd.(*btcjson.RebroadcastTransactionCmd)
 
-	txHash, err := pendingTxHash(cmd.TxID)
+	txHash, err := decodeTxHash(cmd.TxID)
 	if err != nil {
 		return nil, err
 	}
@@ -785,12 +784,9 @@ func getReceivedByAddress(icmd interface{}, w *wallet.Wallet) (interface{}, erro
 func getTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	cmd := icmd.(*btcjson.GetTransactionCmd)
 
-	txHash, err := chainhash.NewHashFromStr(cmd.Txid)
+	txHash, err := decodeTxHash(cmd.Txid)
 	if err != nil {
-		return nil, &btcjson.RPCError{
-			Code:    btcjson.ErrRPCDecodeHexString,
-			Message: "Transaction hash string decode failed: " + err.Error(),
-		}
+		return nil, err
 	}
 
 	details, err := wallet.UnstableAPI(w).TxDetails(txHash)
@@ -827,10 +823,10 @@ func getTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		ret.BlockHash = details.Block.Hash.String()
 		ret.BlockTime = details.Block.Time.Unix()
 		ret.Confirmations = int64(confirms(details.Block.Height, syncBlock.Height))
-	} else if status := w.RelayStatus(*txHash); status.Tracked {
-		ret.Relayed = &status.Relayed
-		if status.Relayed {
-			ret.LastRelayTime = status.LastRelayed.Unix()
+	} else if relayed, last, ok := w.RelayStatus(*txHash); ok {
+		ret.Relayed = &relayed
+		if relayed {
+			ret.LastRelayTime = last.Unix()
 		}
 	}
 

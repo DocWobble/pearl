@@ -16,39 +16,22 @@ import (
 // pending transaction is asked of one that is already mined.
 var ErrTxConfirmed = errors.New("transaction is already confirmed")
 
-// RelayStatus is the evidence the chain backend holds about whether the
-// network took a pending transaction.
-type RelayStatus struct {
-	// Tracked is false when the backend keeps no such evidence, which is
-	// the case for a full node: its own mempool answers the question and
-	// nothing here should be shown to the user.
-	Tracked bool
+// RelayStatus reports the chain backend's evidence on whether the network
+// took the pending transaction txHash: relayed is true if a peer requested it
+// after an announcement made in this daemon session, and last is when. It
+// therefore reads false for "not announced since start", not for "the
+// network lacks it". ok is false when the backend keeps no such evidence, as
+// a full node's own mempool answers the question and nothing should be shown.
+func (w *Wallet) RelayStatus(txHash chainhash.Hash) (relayed bool,
+	last time.Time, ok bool) {
 
-	// Relayed is true if a peer requested the transaction after an
-	// announcement made during this daemon session. False therefore means
-	// "not announced since start", not "the network lacks it".
-	Relayed bool
-
-	// LastRelayed is when that peer request happened; zero if !Relayed.
-	LastRelayed time.Time
-}
-
-// broadcastTracker returns the chain backend's relay evidence, if it keeps
-// any.
-func (w *Wallet) broadcastTracker() (chain.BroadcastTracker, bool) {
 	tracker, ok := w.ChainClient().(chain.BroadcastTracker)
-	return tracker, ok
-}
-
-// RelayStatus reports the backend's relay evidence for txHash.
-func (w *Wallet) RelayStatus(txHash chainhash.Hash) RelayStatus {
-	tracker, ok := w.broadcastTracker()
 	if !ok {
-		return RelayStatus{}
+		return false, time.Time{}, false
 	}
 
-	last, relayed := tracker.LastRelayed(txHash)
-	return RelayStatus{Tracked: true, Relayed: relayed, LastRelayed: last}
+	last, relayed = tracker.LastRelayed(txHash)
+	return relayed, last, true
 }
 
 // pendingTxDetails loads txHash and rejects anything that is not a pending
@@ -80,7 +63,7 @@ func (w *Wallet) pendingTxDetails(ns walletdb.ReadBucket,
 func (w *Wallet) RemoveTransaction(txHash chainhash.Hash) ([]chainhash.Hash,
 	error) {
 
-	var removed []chainhash.Hash
+	removed := []chainhash.Hash{txHash}
 	err := walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
 		txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
 
@@ -89,21 +72,35 @@ func (w *Wallet) RemoveTransaction(txHash chainhash.Hash) ([]chainhash.Hash,
 			return err
 		}
 
-		unmined, err := w.TxStore.UnminedTxs(txmgrNs)
+		before, err := w.TxStore.UnminedTxHashes(txmgrNs)
 		if err != nil {
 			return err
 		}
-		removed = dependentTxHashes(txHash, unmined)
+		err = w.TxStore.RemoveUnminedTx(txmgrNs, &details.TxRecord)
+		if err != nil {
+			return err
+		}
+		after, err := w.TxStore.UnminedTxHashes(txmgrNs)
+		if err != nil {
+			return err
+		}
 
-		return w.TxStore.RemoveUnminedTx(txmgrNs, &details.TxRecord)
+		kept := make(map[chainhash.Hash]struct{}, len(after))
+		for _, hash := range after {
+			kept[*hash] = struct{}{}
+		}
+		for _, hash := range before {
+			if _, ok := kept[*hash]; !ok && *hash != txHash {
+				removed = append(removed, *hash)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Relay evidence must not outlive the record it describes: a later
-	// transaction with the same hash would otherwise read as relayed.
-	if tracker, ok := w.broadcastTracker(); ok {
+	if tracker, ok := w.ChainClient().(chain.BroadcastTracker); ok {
 		for _, hash := range removed {
 			tracker.ForgetTransaction(hash)
 		}
@@ -117,9 +114,8 @@ func (w *Wallet) RemoveTransaction(txHash chainhash.Hash) ([]chainhash.Hash,
 // dependency order. Without a wallet-side retry loop a child whose parent no
 // peer holds would otherwise stay an orphan forever.
 //
-// It stops at the first failure and returns the hashes announced so far along
-// with the error. A chain.ErrTxNotRelayed keeps the record; a rejection
-// removes it, as any resend does.
+// It stops at the first failure. A chain.ErrTxNotRelayed keeps the record; a
+// rejection removes it, as any resend does.
 func (w *Wallet) RebroadcastTransaction(txHash chainhash.Hash) (
 	[]chainhash.Hash, error) {
 
@@ -127,8 +123,7 @@ func (w *Wallet) RebroadcastTransaction(txHash chainhash.Hash) (
 	err := walletdb.View(w.db, func(dbTx walletdb.ReadTx) error {
 		txmgrNs := dbTx.ReadBucket(wtxmgrNamespaceKey)
 
-		details, err := w.pendingTxDetails(txmgrNs, txHash)
-		if err != nil {
+		if _, err := w.pendingTxDetails(txmgrNs, txHash); err != nil {
 			return err
 		}
 
@@ -136,7 +131,7 @@ func (w *Wallet) RebroadcastTransaction(txHash chainhash.Hash) (
 		if err != nil {
 			return err
 		}
-		toAnnounce = unminedAncestry(&details.MsgTx, unmined)
+		toAnnounce = unminedAncestry(txHash, unmined)
 
 		return nil
 	})
@@ -148,7 +143,7 @@ func (w *Wallet) RebroadcastTransaction(txHash chainhash.Hash) (
 	for _, tx := range toAnnounce {
 		hash, err := w.publishTransaction(tx, republish)
 		if err != nil {
-			return announced, err
+			return nil, err
 		}
 		announced = append(announced, *hash)
 	}
@@ -156,67 +151,38 @@ func (w *Wallet) RebroadcastTransaction(txHash chainhash.Hash) (
 	return announced, nil
 }
 
-// dependentTxHashes returns root followed by every transaction in unmined
-// that spends, directly or through other unmined transactions, an output of
-// root.
-func dependentTxHashes(root chainhash.Hash,
-	unmined []*wire.MsgTx) []chainhash.Hash {
+// unminedAncestry returns the transaction txHash preceded by every
+// transaction in unmined that it spends from, directly or through other
+// unmined transactions. unmined must be in dependency order, as
+// TxStore.UnminedTxs guarantees, so filtering it preserves that order.
+func unminedAncestry(txHash chainhash.Hash,
+	unmined []*wire.MsgTx) []*wire.MsgTx {
 
-	hashes := make([]chainhash.Hash, len(unmined))
-	for i, tx := range unmined {
-		hashes[i] = tx.TxHash()
-	}
-
-	dependents := []chainhash.Hash{root}
-	inSet := map[chainhash.Hash]struct{}{root: {}}
-	for grew := true; grew; {
-		grew = false
-		for i, tx := range unmined {
-			if _, ok := inSet[hashes[i]]; ok {
-				continue
-			}
-			for _, txIn := range tx.TxIn {
-				if _, ok := inSet[txIn.PreviousOutPoint.Hash]; !ok {
-					continue
-				}
-				inSet[hashes[i]] = struct{}{}
-				dependents = append(dependents, hashes[i])
-				grew = true
-				break
-			}
-		}
-	}
-
-	return dependents
-}
-
-// unminedAncestry returns tx together with every transaction in unmined that
-// it depends on, directly or through other unmined transactions, sorted so
-// that each transaction follows the ones it spends from.
-func unminedAncestry(tx *wire.MsgTx, unmined []*wire.MsgTx) []*wire.MsgTx {
 	byHash := make(map[chainhash.Hash]*wire.MsgTx, len(unmined))
-	for _, u := range unmined {
-		byHash[u.TxHash()] = u
+	for _, tx := range unmined {
+		byHash[tx.TxHash()] = tx
 	}
 
-	ancestry := map[chainhash.Hash]*wire.MsgTx{tx.TxHash(): tx}
-	queue := []*wire.MsgTx{tx}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, txIn := range cur.TxIn {
-			parentHash := txIn.PreviousOutPoint.Hash
-			parent, pending := byHash[parentHash]
-			if !pending {
-				continue
+	wanted := map[chainhash.Hash]bool{txHash: true}
+	for queue := []chainhash.Hash{txHash}; len(queue) > 0; queue = queue[1:] {
+		tx := byHash[queue[0]]
+		if tx == nil {
+			continue
+		}
+		for _, txIn := range tx.TxIn {
+			parent := txIn.PreviousOutPoint.Hash
+			if _, pending := byHash[parent]; pending && !wanted[parent] {
+				wanted[parent] = true
+				queue = append(queue, parent)
 			}
-			if _, seen := ancestry[parentHash]; seen {
-				continue
-			}
-			ancestry[parentHash] = parent
-			queue = append(queue, parent)
 		}
 	}
 
-	return wtxmgr.DependencySort(ancestry)
+	var ancestry []*wire.MsgTx
+	for _, tx := range unmined {
+		if wanted[tx.TxHash()] {
+			ancestry = append(ancestry, tx)
+		}
+	}
+	return ancestry
 }

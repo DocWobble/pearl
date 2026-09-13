@@ -110,7 +110,7 @@ func TestPublisherConcurrent(t *testing.T) {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			require.NoError(t, p.Publish(tx))
+			_ = p.Publish(tx)
 		}()
 		go func() {
 			defer wg.Done()

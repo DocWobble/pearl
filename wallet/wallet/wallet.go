@@ -2223,10 +2223,10 @@ func (w *Wallet) listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails,
 		confirmations = int64(
 			calcConf(details.Block.Height, syncHeight),
 		)
-	} else if status := w.RelayStatus(details.Hash); status.Tracked {
-		relayed = &status.Relayed
-		if status.Relayed {
-			lastRelayTime = status.LastRelayed.Unix()
+	} else if isRelayed, last, ok := w.RelayStatus(details.Hash); ok {
+		relayed = &isRelayed
+		if isRelayed {
+			lastRelayTime = last.Unix()
 		}
 	}
 

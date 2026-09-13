@@ -3,7 +3,7 @@ import { Transaction } from '../../../types/transaction';
 import { usePagination } from '../hooks/usePagination';
 import { useWalletStore } from '../store/walletStore';
 import { Button } from '@/components/ui/button';
-import { getErrorMessage } from '@/lib/utils';
+import { formatTimeAgo, getErrorMessage } from '@/lib/utils';
 import {
   isNotRelayedError,
   pendingStatusLabel,
@@ -15,23 +15,6 @@ import { useState } from 'react';
 interface ActivityPageProps {
   onBack: () => void;
 }
-
-const formatTimeAgo = (timestamp: number): string => {
-  const now = Date.now();
-  const diff = now - timestamp;
-
-  const minutes = Math.floor(diff / (1000 * 60));
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  } else if (hours < 24) {
-    return `${hours}h ago`;
-  } else {
-    return `${days}d ago`;
-  }
-};
 
 const formatFullDate = (timestamp: number): string => {
   const date = new Date(timestamp);
@@ -66,32 +49,40 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
   const [busy, setBusy] = useState<{ txid: string; action: PendingAction } | null>(null);
   const [notice, setNotice] = useState<PendingNotice | null>(null);
 
-  const handleRebroadcast = async (txid: string) => {
-    setBusy({ txid, action: 'rebroadcast' });
+  // run resolves to the success notice, or null for none. Whatever happens,
+  // the listing is refetched: a rejection on rebroadcast removes the record.
+  const runPendingAction = async (
+    txid: string,
+    action: PendingAction,
+    run: () => Promise<string | null>
+  ) => {
+    setBusy({ txid, action });
     setNotice(null);
     try {
-      const announced = await window.appBridge.wallet.rebroadcastTransaction(txid);
-      const ancestors = announced.length - 1;
-      setNotice({
-        txid,
-        tone: 'success',
-        message:
-          ancestors > 0
-            ? `A peer requested the transaction and ${ancestors} pending ancestor${ancestors === 1 ? '' : 's'}.`
-            : 'A peer requested the transaction.',
-      });
+      const message = await run();
+      if (message) setNotice({ txid, tone: 'success', message });
     } catch (err) {
       const message = getErrorMessage(err);
+      const notRelayed = action === 'rebroadcast' && isNotRelayedError(message);
       setNotice({
         txid,
-        tone: isNotRelayedError(message) ? 'warning' : 'error',
-        message: isNotRelayedError(message) ? REBROADCAST_NOT_RELAYED_MESSAGE : message,
+        tone: notRelayed ? 'warning' : 'error',
+        message: notRelayed ? REBROADCAST_NOT_RELAYED_MESSAGE : message,
       });
     } finally {
       setBusy(null);
       await Promise.all([reload(), syncWalletData()]);
     }
   };
+
+  const handleRebroadcast = (txid: string) =>
+    runPendingAction(txid, 'rebroadcast', async () => {
+      const announced = await window.appBridge.wallet.rebroadcastTransaction(txid);
+      const ancestors = announced.length - 1;
+      return ancestors > 0
+        ? `A peer requested the transaction and ${ancestors} pending ancestor${ancestors === 1 ? '' : 's'}.`
+        : 'A peer requested the transaction.';
+    });
 
   const handleRemove = async (txid: string) => {
     const { response } = await window.appBridge.window.showMessageBox({
@@ -105,16 +96,10 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
     });
     if (response !== 1) return;
 
-    setBusy({ txid, action: 'remove' });
-    setNotice(null);
-    try {
+    await runPendingAction(txid, 'remove', async () => {
       await window.appBridge.wallet.removeTransaction(txid);
-    } catch (err) {
-      setNotice({ txid, tone: 'error', message: getErrorMessage(err) });
-    } finally {
-      setBusy(null);
-      await Promise.all([reload(), syncWalletData()]);
-    }
+      return null;
+    });
   };
 
   const handleCopyTxId = async (txid: string) => {

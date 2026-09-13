@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { formatPearlAmount } from '../lib/crypto';
 import { pendingStatusLabel } from '../lib/pending-tx';
+import { formatTimeAgo } from '../lib/utils';
 import {
   Tooltip,
   TooltipContent,
@@ -60,23 +61,6 @@ export default function WalletDashboard() {
       // Leaving the user on a blank dashboard would be worse than showing the
       // unlock screen while cleanup finishes in the background.
       navigate('/unlock');
-    }
-  };
-
-  const formatTimeAgo = (timestamp: number): string => {
-    const now = Date.now();
-    const diff = now - timestamp;
-
-    const minutes = Math.floor(diff / (1000 * 60));
-    const hours = Math.floor(diff / (1000 * 60 * 60));
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-    if (minutes < 60) {
-      return `${minutes}m ago`;
-    } else if (hours < 24) {
-      return `${hours}h ago`;
-    } else {
-      return `${days}d ago`;
     }
   };
 

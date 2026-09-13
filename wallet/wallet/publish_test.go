@@ -112,7 +112,7 @@ func TestResendAfterRescanBackendGate(t *testing.T) {
 		backEnd     string
 		wantResends int
 	}{
-		{backEnd: "btcd", wantResends: 1},
+		{backEnd: "pearld", wantResends: 1},
 		{backEnd: "neutrino", wantResends: 0},
 	}
 
@@ -124,12 +124,7 @@ func TestResendAfterRescanBackendGate(t *testing.T) {
 				sendRawTransactionFunc: sendResult(nil),
 			}
 			fundWallet(t, w, 100_000)
-
-			_, err := w.SendOutputs(
-				[]*wire.TxOut{externalTaprootOutput(t, 50_000)},
-				nil, 0, 1, 1000, CoinSelectionLargest, "",
-			)
-			require.NoError(t, err)
+			sendTo(t, w, 50_000, 1)
 
 			var resends int
 			w.chainClient = &mockChainClient{

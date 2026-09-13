@@ -50,23 +50,9 @@ func TestPendingTxError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var rpcErr *btcjson.RPCError
-			require.ErrorAs(t, pendingTxError(tc.err), &rpcErr)
+			rpcErr := jsonError(pendingTxError(tc.err))
 			require.Equal(t, tc.wantCode, rpcErr.Code)
 			require.Equal(t, tc.wantMsg, rpcErr.Message)
 		})
 	}
-}
-
-func TestPendingTxHash(t *testing.T) {
-	_, err := pendingTxHash("not-hex")
-	var rpcErr *btcjson.RPCError
-	require.ErrorAs(t, err, &rpcErr)
-	require.Equal(t, btcjson.ErrRPCDecodeHexString, rpcErr.Code)
-
-	hash, err := pendingTxHash(
-		"0000000000000000000000000000000000000000000000000000000000000001",
-	)
-	require.NoError(t, err)
-	require.Equal(t, uint8(1), hash[0])
 }

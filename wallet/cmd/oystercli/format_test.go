@@ -99,8 +99,7 @@ func TestRelayLabel(t *testing.T) {
 		want          string
 	}{
 		{"no evidence offered", nil, 0, ""},
-		{"relayed with time", &yes, 10_000 - 5*60, "relayed 5m ago"},
-		{"relayed without time", &yes, 0, "relayed"},
+		{"relayed", &yes, 10_000 - 5*60, "relayed 5m ago"},
 		{"not announced", &no, 0, "not announced since start"},
 	}
 	for _, tt := range tests {

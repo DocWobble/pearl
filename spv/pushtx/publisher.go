@@ -28,7 +28,7 @@ type Publisher struct {
 
 // NewPublisher returns a Publisher that announces through broadcast, which
 // must return a BroadcastError with code Mempool when peers already hold the
-// transaction and one with code NotRelayed when no peer requested it.
+// transaction.
 func NewPublisher(broadcast func(*wire.MsgTx) error) *Publisher {
 	return &Publisher{
 		broadcast:   broadcast,

@@ -107,10 +107,8 @@ func relayLabel(relayed *bool, lastRelayTime int64, now time.Time) string {
 	switch {
 	case relayed == nil:
 		return ""
-	case *relayed && lastRelayTime > 0:
-		return "relayed " + fmtAgo(lastRelayTime, now)
 	case *relayed:
-		return "relayed"
+		return "relayed " + fmtAgo(lastRelayTime, now)
 	default:
 		return "not announced since start"
 	}

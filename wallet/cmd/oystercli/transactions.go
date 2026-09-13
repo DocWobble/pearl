@@ -205,11 +205,12 @@ func removePendingTx(c *client, txid string) error {
 			Negative("Cancel").
 			Value(&confirmed),
 	)))
-	if err != nil || !ok || !confirmed {
-		if err == nil {
-			printWarn("Kept the transaction.")
-		}
+	if err != nil {
 		return err
+	}
+	if !ok || !confirmed {
+		printWarn("Kept the transaction.")
+		return nil
 	}
 
 	var removed []string

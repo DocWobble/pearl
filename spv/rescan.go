@@ -1052,7 +1052,7 @@ func extractBlockMatches(chain ChainSource, ro *rescanOptions,
 
 			chainSource, ok := chain.(*RescanChainSource)
 			if ok {
-				chainSource.publisher.Forget(*tx.Hash())
+				chainSource.ForgetTransaction(*tx.Hash())
 			}
 		}
 	}

@@ -76,16 +76,10 @@ func traced[T any](c *client, method string, fn func() (T, error)) (T, error) {
 	return v, err
 }
 
-// rawCall invokes a parameterless RPC method and decodes the result into out
-// (skipped when out is nil). It exists for the oyster extension methods that
-// have no typed rpcclient binding.
-func (c *client) rawCall(method string, out interface{}) error {
-	return c.rawCallParams(method, nil, out)
-}
-
-// rawCallParams is rawCall with positional parameters, each marshalled as
-// JSON.
-func (c *client) rawCallParams(method string, params []interface{}, out interface{}) error {
+// rawCall invokes an RPC method with positional params and decodes the result
+// into out (skipped when out is nil). It exists for the oyster extension
+// methods that have no typed rpcclient binding.
+func (c *client) rawCall(method string, out interface{}, params ...interface{}) error {
 	rawParams := make([]json.RawMessage, 0, len(params))
 	for _, p := range params {
 		raw, err := json.Marshal(p)
@@ -268,7 +262,7 @@ func (c *client) transaction(txid string) (*btcjson.GetTransactionResult, error)
 // on the daemon; the returned hashes are the removed ones, txid first.
 func (c *client) removeTransaction(txid string) ([]string, error) {
 	var res btcjson.RemoveTransactionResult
-	if err := c.rawCallParams("removetransaction", []interface{}{txid}, &res); err != nil {
+	if err := c.rawCall("removetransaction", &res, txid); err != nil {
 		return nil, err
 	}
 	return res.Removed, nil
@@ -278,7 +272,7 @@ func (c *client) removeTransaction(txid string) ([]string, error) {
 // ancestors first; the returned hashes are the ones a peer requested.
 func (c *client) rebroadcastTransaction(txid string) ([]string, error) {
 	var res btcjson.RebroadcastTransactionResult
-	if err := c.rawCallParams("rebroadcasttransaction", []interface{}{txid}, &res); err != nil {
+	if err := c.rawCall("rebroadcasttransaction", &res, txid); err != nil {
 		return nil, err
 	}
 	return res.Announced, nil
@@ -289,11 +283,7 @@ func (c *client) rebroadcastTransaction(txid string) ([]string, error) {
 // RPC error, so only the message identifies it.
 func isNotRelayedError(err error) bool {
 	var rpcErr *btcjson.RPCError
-	if !errors.As(err, &rpcErr) {
-		return false
-	}
-	return strings.Contains(rpcErr.Message, "not relayed") ||
-		strings.Contains(rpcErr.Message, "no connected peers")
+	return errors.As(err, &rpcErr) && strings.Contains(rpcErr.Message, "not relayed")
 }
 
 func (c *client) send(fromAccount, toAddress string, amount btcutil.Amount, feeRatePerKb float64, minConf int) (*chainhash.Hash, error) {
