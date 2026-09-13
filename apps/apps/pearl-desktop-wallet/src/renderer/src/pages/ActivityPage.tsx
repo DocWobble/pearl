@@ -1,7 +1,15 @@
-import { ArrowLeft, ArrowUpRight, ArrowDownLeft, Copy, Check } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, ArrowDownLeft, Copy, Check, Loader2 } from 'lucide-react';
 import { Transaction } from '../../../types/transaction';
 import { usePagination } from '../hooks/usePagination';
+import { useWalletStore } from '../store/walletStore';
 import { Button } from '@/components/ui/button';
+import { getErrorMessage } from '@/lib/utils';
+import {
+  isNotRelayedError,
+  pendingStatusLabel,
+  REBROADCAST_NOT_RELAYED_MESSAGE,
+  REMOVE_WARNING,
+} from '@/lib/pending-tx';
 import { useState } from 'react';
 
 interface ActivityPageProps {
@@ -40,12 +48,74 @@ const truncateTxId = (txid: string): string => {
   return `${txid.slice(0, 8)}...${txid.slice(-8)}`;
 };
 
+type PendingAction = 'rebroadcast' | 'remove';
+
+interface PendingNotice {
+  txid: string;
+  tone: 'success' | 'warning' | 'error';
+  message: string;
+}
+
 export default function ActivityPage({ onBack }: ActivityPageProps) {
-  const { activities, loading, hasMore, loadMore } = usePagination({
+  const { activities, loading, hasMore, loadMore, reload } = usePagination({
     pageSize: 10,
   });
+  const { syncWalletData } = useWalletStore();
   const [copiedTxId, setCopiedTxId] = useState<string | null>(null);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const [busy, setBusy] = useState<{ txid: string; action: PendingAction } | null>(null);
+  const [notice, setNotice] = useState<PendingNotice | null>(null);
+
+  const handleRebroadcast = async (txid: string) => {
+    setBusy({ txid, action: 'rebroadcast' });
+    setNotice(null);
+    try {
+      const announced = await window.appBridge.wallet.rebroadcastTransaction(txid);
+      const ancestors = announced.length - 1;
+      setNotice({
+        txid,
+        tone: 'success',
+        message:
+          ancestors > 0
+            ? `A peer requested the transaction and ${ancestors} pending ancestor${ancestors === 1 ? '' : 's'}.`
+            : 'A peer requested the transaction.',
+      });
+    } catch (err) {
+      const message = getErrorMessage(err);
+      setNotice({
+        txid,
+        tone: isNotRelayedError(message) ? 'warning' : 'error',
+        message: isNotRelayedError(message) ? REBROADCAST_NOT_RELAYED_MESSAGE : message,
+      });
+    } finally {
+      setBusy(null);
+      await Promise.all([reload(), syncWalletData()]);
+    }
+  };
+
+  const handleRemove = async (txid: string) => {
+    const { response } = await window.appBridge.window.showMessageBox({
+      type: 'warning',
+      title: 'Remove pending transaction',
+      message: 'Remove this pending transaction from the wallet?',
+      detail: REMOVE_WARNING,
+      buttons: ['Cancel', 'Remove'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (response !== 1) return;
+
+    setBusy({ txid, action: 'remove' });
+    setNotice(null);
+    try {
+      await window.appBridge.wallet.removeTransaction(txid);
+    } catch (err) {
+      setNotice({ txid, tone: 'error', message: getErrorMessage(err) });
+    } finally {
+      setBusy(null);
+      await Promise.all([reload(), syncWalletData()]);
+    }
+  };
 
   const handleCopyTxId = async (txid: string) => {
     try {
@@ -138,7 +208,9 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
                       {activity.amount} PRL
                     </div>
                     <div className="text-sm text-gray-600">
-                      {activity.confirmations} confirmations
+                      {activity.confirmations === 0
+                        ? pendingStatusLabel(activity)
+                        : `${activity.confirmations} confirmations`}
                     </div>
                     {activity.fee > 0 && (
                       <div className="text-xs text-gray-500">
@@ -147,6 +219,48 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
                     )}
                   </div>
                 </div>
+                {activity.confirmations === 0 && (
+                  <div className="mt-3 flex items-center justify-end gap-2 border-t border-gray-100 pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== null}
+                      onClick={() => handleRebroadcast(activity.txid)}
+                    >
+                      {busy?.txid === activity.txid && busy.action === 'rebroadcast' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        'Rebroadcast'
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== null}
+                      className="text-red-600 hover:text-red-700"
+                      onClick={() => handleRemove(activity.txid)}
+                    >
+                      {busy?.txid === activity.txid && busy.action === 'remove' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        'Remove'
+                      )}
+                    </Button>
+                  </div>
+                )}
+                {notice?.txid === activity.txid && (
+                  <div
+                    className={`mt-2 rounded-md px-3 py-2 text-xs ${
+                      notice.tone === 'success'
+                        ? 'bg-green-50 text-green-800'
+                        : notice.tone === 'warning'
+                          ? 'bg-amber-50 text-amber-800'
+                          : 'bg-red-50 text-red-800'
+                    }`}
+                  >
+                    {notice.message}
+                  </div>
+                )}
               </div>
             ))}
 

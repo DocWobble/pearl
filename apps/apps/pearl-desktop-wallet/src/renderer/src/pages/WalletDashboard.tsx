@@ -3,6 +3,7 @@ import { Copy, CheckCircle2, ArrowUpRight, ArrowDownLeft, Lock, Key, Loader2 } f
 import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { formatPearlAmount } from '../lib/crypto';
+import { pendingStatusLabel } from '../lib/pending-tx';
 import {
   Tooltip,
   TooltipContent,
@@ -236,6 +237,9 @@ export default function WalletDashboard() {
                           {activity.type === 'received' ? 'Received' : 'Sent'}
                         </div>
                         <div className="text-xs text-gray-500">{formatTimeAgo(activity.time)}</div>
+                        {activity.confirmations === 0 && (
+                          <div className="text-xs text-amber-700">{pendingStatusLabel(activity)}</div>
+                        )}
                       </div>
                     </div>
                     <div

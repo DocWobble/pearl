@@ -13,6 +13,7 @@ import TransactionPreview from './TransactionPreview';
 import SendButton from './SendButton';
 import { formatTxid } from '@/lib/crypto';
 import { getErrorMessage } from '@/lib/utils';
+import { isNotRelayedError } from '@/lib/pending-tx';
 
 type FeeLevel = 'fast' | 'medium' | 'slow';
 const MEMPOOL_MIN_FEE_PER_VBYTE = 0.00001;
@@ -24,12 +25,6 @@ const NO_PEERS_MESSAGE =
 const NOT_RELAYED_MESSAGE =
   'No network peer accepted the transaction. Nothing was sent and your funds are untouched. ' +
   'Check your connection and try again.';
-
-// The daemon reports this when it announced the transaction but no peer asked
-// for it, so nothing left this machine.
-function isNotRelayedError(message: string): boolean {
-  return message.includes('not relayed') || message.includes('no connected peers');
-}
 
 // Reads the peer count directly from the daemon. Undefined means unknown,
 // which must not block a send; only an explicit 0 does.
