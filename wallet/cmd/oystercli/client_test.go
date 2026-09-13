@@ -32,6 +32,76 @@ func TestIsRPCErrorCode(t *testing.T) {
 	assert.False(t, isRPCErrorCode(nil, btcjson.ErrRPCWalletUnlockNeeded))
 }
 
+func TestIsNotRelayedError(t *testing.T) {
+	// The daemon reports this verdict as a generic internal error, so the
+	// message is the only handle the CLI has.
+	notRelayed := &btcjson.RPCError{
+		Code:    btcjson.ErrRPCInternal.Code,
+		Message: "transaction not relayed to any peer: no peer requested it",
+	}
+	noPeers := &btcjson.RPCError{
+		Code:    btcjson.ErrRPCInternal.Code,
+		Message: "transaction not relayed to any peer: no connected peers",
+	}
+	other := &btcjson.RPCError{Code: btcjson.ErrRPCInternal.Code, Message: "db closed"}
+
+	assert.True(t, isNotRelayedError(notRelayed))
+	assert.True(t, isNotRelayedError(fmt.Errorf("wrap: %w", noPeers)))
+	assert.False(t, isNotRelayedError(other))
+	assert.False(t, isNotRelayedError(errors.New("not relayed")))
+	assert.False(t, isNotRelayedError(nil))
+}
+
+// TestPendingTxCalls checks the two pending-transaction commands go out with
+// the txid as their single positional parameter and decode their results.
+func TestPendingTxCalls(t *testing.T) {
+	txid := "aa11bc0de2331fd6bb381f5bdc37a20c1c92cd6b71dc7f7f7ea9c1f0b4a1c2d3"
+	parent := "bb11bc0de2331fd6bb381f5bdc37a20c1c92cd6b71dc7f7f7ea9c1f0b4a1c2d3"
+
+	var gotMethod string
+	var gotParams []interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     interface{}   `json:"id"`
+			Method string        `json:"method"`
+			Params []interface{} `json:"params"`
+		}
+		_ = json.Unmarshal(body, &req)
+		gotMethod, gotParams = req.Method, req.Params
+
+		var result interface{}
+		switch req.Method {
+		case "removetransaction":
+			result = map[string][]string{"removed": {txid}}
+		case "rebroadcasttransaction":
+			result = map[string][]string{"announced": {parent, txid}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "1.0", "id": req.ID, "result": result, "error": nil,
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &config{Connect: strings.TrimPrefix(srv.URL, "http://"), RPCUser: "u", RPCPass: "p", NoTLS: true}
+	cfg.activeNet = mainNetForTest()
+	c, err := dialClient(cfg)
+	require.NoError(t, err)
+	defer c.shutdown()
+
+	removed, err := c.removeTransaction(txid)
+	require.NoError(t, err)
+	assert.Equal(t, "removetransaction", gotMethod)
+	assert.Equal(t, []interface{}{txid}, gotParams)
+	assert.Equal(t, []string{txid}, removed)
+
+	announced, err := c.rebroadcastTransaction(txid)
+	require.NoError(t, err)
+	assert.Equal(t, "rebroadcasttransaction", gotMethod)
+	assert.Equal(t, []interface{}{txid}, gotParams)
+	assert.Equal(t, []string{parent, txid}, announced)
+}
+
 func TestSendUsesSendmany(t *testing.T) {
 	// sendfrom is gated on an RPC-typed chain client and fails in SPV mode,
 	// so the send must go out as sendmany (which broadcasts over P2P too).
