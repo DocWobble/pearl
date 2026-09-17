@@ -7,7 +7,6 @@ package netsync
 import (
 	"container/list"
 	"math/rand"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -410,7 +409,7 @@ func (sm *SyncManager) startSync() {
 	// downloads when in regression test mode.
 	if sm.nextCheckpoint != nil &&
 		best.Height < sm.nextCheckpoint.Height &&
-		sm.chainParams != &chaincfg.RegressionNetParams {
+		sm.chainParams.Name != chaincfg.RegressionNetParams.Name {
 
 		bestPeer.PushGetHeadersMsg(locator, sm.nextCheckpoint.Hash, true)
 		sm.headersFirstMode = true
@@ -431,25 +430,6 @@ func (sm *SyncManager) startSync() {
 // isSyncCandidate returns whether or not the peer is a candidate to consider
 // syncing from.
 func (sm *SyncManager) isSyncCandidate(peer *peerpkg.Peer) bool {
-	// Typically a peer is not a candidate for sync if it's not a full node,
-	// however regression test is special in that the regression tool is
-	// not a full node and still needs to be considered a sync candidate.
-	if sm.chainParams == &chaincfg.RegressionNetParams {
-		// The peer is not a candidate if it's not coming from localhost
-		// or the hostname can't be determined for some reason.
-		host, _, err := net.SplitHostPort(peer.Addr())
-		if err != nil {
-			return false
-		}
-
-		if host != "127.0.0.1" && host != "localhost" {
-			return false
-		}
-
-		// Candidate if all checks passed.
-		return true
-	}
-
 	var (
 		nodeServices = peer.Services()
 		fullNode     = nodeServices.HasFlag(wire.SFNodeNetwork)
@@ -753,7 +733,7 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) error {
 		// the peer or ignore the block when we're in regression test
 		// mode in this case so the chain code is actually fed the
 		// duplicate blocks.
-		if sm.chainParams != &chaincfg.RegressionNetParams {
+		if sm.chainParams.Name != chaincfg.RegressionNetParams.Name {
 			log.Warnf("Got unrequested block %v from %s -- "+
 				"disconnecting", blockHash, peer.Addr())
 			peer.Disconnect()
@@ -1277,11 +1257,13 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 	}
 
 	// Attempt to find the final block in the inventory list.  There may
-	// not be one.
+	// not be one. Witness-typed invs count too: the gate below keys off
+	// this index, and a peer must not bypass it by picking the other
+	// block type.
 	lastBlock := -1
 	invVects := imsg.inv.InvList
 	for i := len(invVects) - 1; i >= 0; i-- {
-		if invVects[i].Type == wire.InvTypeBlock {
+		if typ := invVects[i].Type; typ == wire.InvTypeBlock || typ == wire.InvTypeWitnessBlock {
 			lastBlock = i
 			break
 		}
@@ -1296,9 +1278,9 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 		peer.UpdateLastAnnouncedBlock(&invVects[lastBlock].Hash)
 	}
 
-	// Ignore invs from peers that aren't the sync if we are not current.
-	// Helps prevent fetching a mass of orphans.
-	if peer != sm.syncPeer && !sm.current() {
+	// Ignore invs from peers that aren't the sync peer if we are not current. Helps prevent fetching a mass of
+	// orphans. When syncPeer is nil, accept invs from any peer.
+	if sm.syncPeer != nil && peer != sm.syncPeer && !sm.current() {
 		return
 	}
 
@@ -1311,12 +1293,13 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 		}
 	}
 
-	// Low-quality + current peers route block announcements through a
-	// single cert-less getheaders probe anchored on the last announced
-	// block; handleHeadersMsg converts a valid response into getdata.
-	// Skip the probe when we already have the anchor (the peer has
-	// nothing new for us in this batch).
-	if lastBlock >= 0 && sm.current() && !isPeerHighQuality(state) {
+	// Low-quality peers route block announcements through a single
+	// cert-less getheaders probe anchored on the last announced block;
+	// handleHeadersMsg converts a valid response into getdata. The gate
+	// also covers the no-sync-peer window, where non-sync-peer invs are
+	// otherwise acted on. Skip the probe when we already have the anchor
+	// (the peer has nothing new for us in this batch).
+	if lastBlock >= 0 && (sm.current() || sm.syncPeer == nil) && !isPeerHighQuality(state) {
 		if have, _ := sm.haveInventory(invVects[lastBlock]); !have {
 			locator, _ := sm.chain.LatestBlockLocator()
 			_ = peer.PushGetHeadersMsg(
@@ -1348,12 +1331,12 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 			continue
 		}
 
-		// Block invs from low-quality + current peers are handled by
-		// the probe dispatched above. Skip the per-inv block path
+		// Block invs from gated low-quality peers are handled by the
+		// probe dispatched above. Skip the per-inv block path
 		// (including IsKnownOrphan retry and long-side-chain stall
 		// detection) so untrusted peers can't drive our state machine.
-		if iv.Type == wire.InvTypeBlock && sm.current() &&
-			!isPeerHighQuality(state) {
+		if (iv.Type == wire.InvTypeBlock || iv.Type == wire.InvTypeWitnessBlock) &&
+			(sm.current() || sm.syncPeer == nil) && !isPeerHighQuality(state) {
 			continue
 		}
 
