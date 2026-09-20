@@ -13,7 +13,6 @@ interface WalletState {
   filterHeaderHeight: number;
   blockHeight: number;
   bestPeerHeight: number;
-  connections?: number;
   syncPhase: SyncPhase;
   isBlockchainSynced: boolean;
   syncWalletData: () => Promise<void>;
@@ -46,7 +45,6 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
   filterHeaderHeight: 0,
   blockHeight: 0,
   bestPeerHeight: 0,
-  connections: undefined,
   syncPhase: 'idle',
   isBlockchainSynced: false,
 
@@ -87,7 +85,6 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
         filterHeaderHeight: p.filterHeaderHeight,
         blockHeight: p.blockHeight,
         bestPeerHeight: p.bestPeerHeight,
-        connections: p.connections,
         syncPhase: derivePhase(p),
         isBlockchainSynced: p.synced,
       });

@@ -15,7 +15,6 @@ class WalletRpcMethods {
         filter_header_height: number;
         block_height: number;
         best_peer_height: number;
-        connections?: number;
         synced: boolean;
       }>('getsyncprogress', [])
       .then(r => ({
@@ -23,7 +22,6 @@ class WalletRpcMethods {
         filterHeaderHeight: r.filter_header_height,
         blockHeight: r.block_height,
         bestPeerHeight: r.best_peer_height,
-        connections: r.connections,
         synced: r.synced,
       }));
   }
