@@ -156,10 +156,11 @@ type GetTransactionResult struct {
 	Details         []GetTransactionDetailsResult `json:"details"`
 	Hex             string                        `json:"hex"`
 
-	// Relayed and LastRelayTime are present only for an unconfirmed
-	// transaction on a backend that keeps relay evidence (SPV). Relayed
-	// false means no peer requested the transaction after an announcement
-	// made in the current daemon session, not that the network lacks it.
+	// Relayed and LastRelayTime are present only for an unconfirmed send
+	// on a backend that keeps relay evidence (SPV). Incoming 0-conf
+	// payments omit them. Relayed false means no peer requested the
+	// transaction after an announcement made in the current daemon
+	// session, not that the network lacks it.
 	Relayed       *bool `json:"relayed,omitempty"`
 	LastRelayTime int64 `json:"lastrelaytime,omitempty"`
 }

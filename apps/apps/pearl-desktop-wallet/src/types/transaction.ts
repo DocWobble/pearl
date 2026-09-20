@@ -10,8 +10,8 @@ export interface Transaction {
   blockhash: string;
   trusted: boolean;
   generated: boolean;
-  // Present only for a pending transaction on an SPV daemon. false means no
-  // peer requested it since the daemon started, not that the network lacks it.
+  // Present only for a pending send on an SPV daemon. false means no peer
+  // requested it since the daemon started, not that the network lacks it.
   relayed?: boolean;
   // Milliseconds; set only when relayed is true.
   lastRelayTime?: number;

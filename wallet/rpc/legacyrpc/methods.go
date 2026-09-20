@@ -823,10 +823,13 @@ func getTransaction(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		ret.BlockHash = details.Block.Hash.String()
 		ret.BlockTime = details.Block.Time.Unix()
 		ret.Confirmations = int64(confirms(details.Block.Height, syncBlock.Height))
-	} else if relayed, last, ok := w.RelayStatus(*txHash); ok {
-		ret.Relayed = &relayed
-		if relayed {
-			ret.LastRelayTime = last.Unix()
+	} else if len(details.Debits) != 0 {
+		// Incoming 0-conf was never announced by this wallet.
+		if relayed, last, ok := w.RelayStatus(*txHash); ok {
+			ret.Relayed = &relayed
+			if relayed {
+				ret.LastRelayTime = last.Unix()
+			}
 		}
 	}
 

@@ -2217,16 +2217,22 @@ func (w *Wallet) listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails,
 		relayed       *bool
 		lastRelayTime int64
 	)
+	// Relay evidence is only meaningful for a send this wallet announced.
+	// An incoming 0-conf was never published from this daemon, so
+	// Relayed=false would read as "stuck" rather than "received, unmined".
+	send := len(details.Debits) != 0
 	if details.Block.Height != -1 {
 		blockHashStr = details.Block.Hash.String()
 		blockTime = details.Block.Time.Unix()
 		confirmations = int64(
 			calcConf(details.Block.Height, syncHeight),
 		)
-	} else if isRelayed, last, ok := w.RelayStatus(details.Hash); ok {
-		relayed = &isRelayed
-		if isRelayed {
-			lastRelayTime = last.Unix()
+	} else if send {
+		if isRelayed, last, ok := w.RelayStatus(details.Hash); ok {
+			relayed = &isRelayed
+			if isRelayed {
+				lastRelayTime = last.Unix()
+			}
 		}
 	}
 
@@ -2235,8 +2241,6 @@ func (w *Wallet) listTransactions(tx walletdb.ReadTx, details *wtxmgr.TxDetails,
 	received := details.Received.Unix()
 	generated := blockchain.IsCoinBaseTx(&details.MsgTx)
 	recvCat := RecvCategory(details, syncHeight, net).String()
-
-	send := len(details.Debits) != 0
 
 	// Fee can only be determined if every input is a debit.
 	var feeF64 float64

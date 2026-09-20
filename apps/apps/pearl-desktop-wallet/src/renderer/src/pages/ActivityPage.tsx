@@ -50,7 +50,8 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
   const [notice, setNotice] = useState<PendingNotice | null>(null);
 
   // run resolves to the success notice, or null for none. Whatever happens,
-  // the listing is refetched: a rejection on rebroadcast removes the record.
+  // the listing is refetched: a rejection on rebroadcast removes the record,
+  // and that notice is then rendered above the list because the row is gone.
   const runPendingAction = async (
     txid: string,
     action: PendingAction,
@@ -134,6 +135,21 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
 
       {/* Content - Scrollable */}
       <div className="flex-1 overflow-y-auto p-6">
+        {notice && !activities.some(activity => activity.txid === notice.txid) && (
+          <div
+            className={`mb-4 rounded-md px-3 py-2 text-xs ${
+              notice.tone === 'success'
+                ? 'bg-green-50 text-green-800'
+                : notice.tone === 'warning'
+                  ? 'bg-amber-50 text-amber-800'
+                  : 'bg-red-50 text-red-800'
+            }`}
+          >
+            {notice.tone === 'error'
+              ? `Rebroadcast rejected; the pending send was removed from the wallet. ${notice.message}`
+              : notice.message}
+          </div>
+        )}
         {loading && activities.length === 0 ? (
           <div className="py-12 text-center text-gray-500">
             <p>Loading activities...</p>
@@ -204,7 +220,7 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
                     )}
                   </div>
                 </div>
-                {activity.confirmations === 0 && (
+                {activity.confirmations === 0 && activity.type === 'sent' && (
                   <div className="mt-3 flex items-center justify-end gap-2 border-t border-gray-100 pt-3">
                     <Button
                       variant="outline"

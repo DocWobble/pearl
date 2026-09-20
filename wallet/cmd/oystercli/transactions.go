@@ -131,10 +131,25 @@ func showTransactionDetail(c *client, txid string) error {
 	printTitle("Transaction detail")
 	printBox(kvLines(rows))
 
-	if tx.Confirmations > 0 {
+	// Rebroadcast and remove recover a stuck send. An incoming 0-conf
+	// was never announced by this wallet; forgetting it would drop the
+	// credit (and any spend chained off it) while the payment can still
+	// confirm on chain.
+	if tx.Confirmations > 0 || !isWalletSend(tx) {
 		return nil
 	}
 	return pendingTxActions(c, tx.TxID)
+}
+
+// isWalletSend reports whether this wallet originated the transaction, as
+// opposed to merely receiving an output from it.
+func isWalletSend(tx *btcjson.GetTransactionResult) bool {
+	for _, det := range tx.Details {
+		if det.Category == "send" {
+			return true
+		}
+	}
+	return false
 }
 
 // pendingTxActions lets the user re-announce or remove a pending transaction.

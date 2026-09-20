@@ -19,7 +19,8 @@ export const REMOVE_WARNING =
 // Status line for an unconfirmed transaction. Relay fields are absent on a
 // full-node daemon, where there is nothing to say beyond "pending".
 export function pendingStatusLabel(tx: Transaction, nowMs = Date.now()): string {
-  if (tx.relayed === undefined) return 'Pending';
+  // Relay copy is for sends this wallet announced. Incoming 0-conf is just pending.
+  if (tx.type === 'received' || tx.relayed === undefined) return 'Pending';
   if (!tx.relayed) return 'Pending, not announced since start';
   if (tx.lastRelayTime) return `Pending, relayed ${formatTimeAgo(tx.lastRelayTime, nowMs)}`;
   return 'Pending, relayed';

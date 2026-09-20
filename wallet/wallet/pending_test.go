@@ -1,13 +1,18 @@
 package wallet
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/pearl-research-labs/pearl/node/chaincfg/chainhash"
+	"github.com/pearl-research-labs/pearl/node/txscript"
 	"github.com/pearl-research-labs/pearl/node/wire"
 	"github.com/pearl-research-labs/pearl/wallet/chain"
+	"github.com/pearl-research-labs/pearl/wallet/waddrmgr"
+	"github.com/pearl-research-labs/pearl/wallet/walletdb"
+	"github.com/pearl-research-labs/pearl/wallet/wtxmgr"
 	"github.com/stretchr/testify/require"
 )
 
@@ -269,6 +274,29 @@ func TestRelayStatusInListings(t *testing.T) {
 		require.True(t, seen)
 	})
 
+	t.Run("incoming receive has no relay status", func(t *testing.T) {
+		w, cleanup := testWallet(t)
+		t.Cleanup(cleanup)
+		w.chainClient = newTrackingChainClient()
+
+		hash := addUnminedIncoming(t, w, 40_000)
+
+		results, err := w.ListAllTransactions()
+		require.NoError(t, err)
+
+		var seen bool
+		for _, r := range results {
+			if r.TxID != hash.String() {
+				continue
+			}
+			seen = true
+			require.Equal(t, "receive", r.Category)
+			require.Nil(t, r.Relayed, "incoming txs carry no relay status")
+			require.Zero(t, r.LastRelayTime)
+		}
+		require.True(t, seen)
+	})
+
 	t.Run("non-tracking backend omits the fields", func(t *testing.T) {
 		w, cleanup := testWallet(t)
 		t.Cleanup(cleanup)
@@ -286,6 +314,39 @@ func TestRelayStatusInListings(t *testing.T) {
 		_, _, ok := w.RelayStatus(tx.TxHash())
 		require.False(t, ok)
 	})
+}
+
+// addUnminedIncoming credits the wallet with an unconfirmed receive it did
+// not originate, the way a 0-conf incoming payment is recorded.
+func addUnminedIncoming(t *testing.T, w *Wallet, value int64) chainhash.Hash {
+	t.Helper()
+
+	addr, err := w.CurrentAddress(0, waddrmgr.KeyScopeBIP0086)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToAddrScript(addr)
+	require.NoError(t, err)
+
+	incoming := &wire.MsgTx{
+		TxIn: []*wire.TxIn{{
+			PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{0xee}},
+		}},
+		TxOut: []*wire.TxOut{wire.NewTxOut(value, pkScript)},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, incoming.Serialize(&buf))
+	rec, err := wtxmgr.NewTxRecord(buf.Bytes(), time.Now())
+	require.NoError(t, err)
+
+	err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(wtxmgrNamespaceKey)
+		if err := w.TxStore.InsertTx(ns, rec, nil); err != nil {
+			return err
+		}
+		return w.TxStore.AddCredit(ns, rec, nil, 0, false)
+	})
+	require.NoError(t, err)
+	return incoming.TxHash()
 }
 
 func TestUnminedAncestry(t *testing.T) {
