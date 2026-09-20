@@ -498,11 +498,11 @@ def _launch_stages(
     noise_key_a = a_keys[32:64]
     pow_key = a_keys[64:96]
 
-    # F_A is A's own basis, keyed by this launch's seedA: k lines drawn per
-    # launch. At R == PACKED_NOISE_K the (k, R) draw viewed as int8 is already
-    # noisy_quant's packed blob (pack_noise_factor).
+    # F_A is keyed by seedB (Side.A addresses), so the lines are a job
+    # constant. Drawn here so noisy_quant still sees a packed (k, R) blob;
+    # at R == PACKED_NOISE_K that view-as-int8 is pack_noise_factor.
     f1_lines = torch.empty(k, R, dtype=torch.float8_e4m3fn, device=device)
-    noise_lines(noise_key_a, LABEL_F1, f1_lines)
+    noise_lines(ctx.noise_key_b_dev, LABEL_F1, f1_lines)
 
     alpha_a = torch.empty(m, dtype=torch.bfloat16, device=device)
     beta_a = torch.empty_like(alpha_a)
@@ -549,12 +549,11 @@ def _launch_stages(
 
 
 def _b_peel_for_launch(ctx: BOperands, f1_lines: torch.Tensor, out: torch.Tensor) -> None:
-    """B's peel for this launch's ``F_A`` (``pearl_gemm.b_peel_for_a``) into the
-    launch-owned ``out``: the mid half is a per-launch ``(n, k) x (k, R)`` FP8
-    product over ``B'`` -- one extra streaming read of the weight per mined
-    forward that emits ``C``. Like every other per-launch buffer here, ``out``
-    and the helper's FP32 intermediates come from the caching allocator;
-    ``memory._launch_bytes`` budgets them."""
+    """B's peel for this job's ``F_A`` (``pearl_gemm.b_peel_for_a``) into the
+    launch-owned ``out``. ``F_A`` is keyed by seedB, so the mid half is the
+    same ``(n, k) x (k, R)`` product every launch of the job. Like every
+    other per-launch buffer here, ``out`` and the helper's FP32 intermediates
+    come from the caching allocator; ``memory._launch_bytes`` budgets them."""
     from pearl_gemm import b_peel_for_a
 
     b_peel_for_a(ctx.b_prime, ctx.e2, ctx.f2, ctx.beta_b, ctx.b_peel, f1_lines, out=out)

@@ -39,7 +39,7 @@ class LayerBuffers:
 
     b_prime: torch.Tensor  # (n, k) float8_e4m3fn
     # Columns [R, 2R) hold -(beta_b (.) E_B), the per-job half of B's peel. The
-    # mid half [0, R) depends on the per-nonce F_A and is recomputed per launch
+    # mid half [0, R) is filled per launch from the job-constant F_A
     # (pipeline._b_peel_for_launch); the kernel writes a zero placeholder here.
     b_peel: torch.Tensor  # (n, 2R) bfloat16
     alpha_b: torch.Tensor  # (n,) bfloat16
@@ -60,7 +60,7 @@ class LayerBuffers:
     key_a_dev: torch.Tensor  # (32,) uint8 keyA (the header's A-side opening key)
     key_b_dev: torch.Tensor  # (32,) uint8 keyB (B's Merkle key)
     seed_b_dev: torch.Tensor  # (32,) uint8 noise seedB (finalize input, hit-record stamp)
-    noise_key_b_dev: torch.Tensor  # (32,) uint8 Subkey("noise-line", seedB): E_B/F_B draw key
+    noise_key_b_dev: torch.Tensor  # (32,) uint8 Subkey("noise-line", seedB): E_B/F_A/F_B draw key
     threshold_dev: torch.Tensor  # (32,) uint8 little-endian lottery threshold
 
 
@@ -119,6 +119,7 @@ class JobContext:
     target: int
     key_a_dev: torch.Tensor
     seed_b_dev: torch.Tensor
+    noise_key_b_dev: torch.Tensor
     threshold_dev: torch.Tensor
     f2: torch.Tensor
     e2: torch.Tensor

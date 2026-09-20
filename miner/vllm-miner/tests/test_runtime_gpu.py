@@ -216,14 +216,14 @@ def test_prepare_layer_matches_reference_commitment_chain(layer_state):
     assert bytes(buffers.seed_b_dev.cpu().numpy()) == expected_seed_b
     assert bytes(buffers.threshold_dev.cpu().numpy()) == threshold_bytes_for(job, k, n)
 
-    # Uploaded operands equal the canonical CPU reference build. v4 draws F_A
-    # from each launch's own seedA, so the B side is checked under a probe
-    # seedA: the job-invariant parts from the buffers, the per-launch mid half
-    # of the peel through the same ``b_peel_for_a`` the pipeline runs.
+    # Uploaded operands equal the canonical CPU reference build. F_A is keyed
+    # by seedB (Side.A addresses), so the B-side check uses that basis: the
+    # job-invariant parts from the buffers, the mid half of the peel through
+    # the same ``b_peel_for_a`` the pipeline runs.
     hardware = hardware_for(config.device)
     scheme = PearlScheme(hardware, Fp8QuantScheme(), k, RANK)
     seed_a_probe = b"\x00" * 32
-    noise_a = OperandNoiser(seed_a_probe, Side.A, RANK, k, hardware.compute)
+    noise_a = OperandNoiser(seed_a_probe, Side.A, RANK, k, hardware.compute, f_seed=expected_seed_b)
     noise_b = OperandNoiser(expected_seed_b, Side.B, RANK, k, hardware.compute)
     stacked = scheme.build_b_rows(
         weight_pq.open(), noise_a, noise_b, list(range(n)), weight_pq.exact_norms()

@@ -73,6 +73,12 @@ def test_subkeys_are_the_reference_noise_and_jackpot_keys(chain):
     compute = hardware_for(config.device).compute
     assert OperandNoiser(seed_a, Side.A, 32, 1024, compute)._key == noise_line_key(seed_a)
     assert OperandNoiser(seed_b, Side.B, 32, 1024, compute)._key == noise_line_key(seed_b)
+    noise_a = OperandNoiser(seed_a, Side.A, 32, 1024, compute, f_seed=seed_b)
+    other_a = OperandNoiser(b"\x11" * 32, Side.A, 32, 1024, compute, f_seed=seed_b)
+    other_b = OperandNoiser(seed_a, Side.A, 32, 1024, compute, f_seed=b"\x22" * 32)
+    assert torch.equal(noise_a.F(), other_a.F())
+    assert not torch.equal(noise_a.F(), other_b.F())
+    assert noise_a._f_key == noise_line_key(seed_b)
     extracted = secrets.token_bytes(64)
     assert jackpot_key(seed_a) == subkey(LABEL_JACKPOT, seed_a)
     assert blake3(extracted, key=jackpot_key(seed_a)).digest() == jackpot_digest(extracted, seed_a)

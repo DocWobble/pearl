@@ -43,7 +43,7 @@ def _launch_bytes(m: int, n: int, k: int, device) -> int:
             tensor_hash_workspace_bytes(m, k, commit),
             96,  # A keys (seedA || noise-line keyA || jackpot key)
             4 * 2 * (m * k // 512),  # hash statistics
-            k * R,  # FP8 F_A lines, drawn per launch under this A's key
+            k * R,  # FP8 F_A lines, drawn under seedB (Side.A)
             2 * m + 2 * m,  # alpha/beta A
             m * R,  # FP8 E1
             m * k,  # FP8 A prime

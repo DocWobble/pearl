@@ -49,12 +49,11 @@ def _prepare_b_on_gpu(
 
     Returns B's noise seed. The v4 B chain: ``HB = blake3(roots, key=keyB)``,
     ``seedB = H_"seed-B"(HB || keyB || pB)``, and every B-side line (``E_B``
-    in-kernel, ``F_B`` here) is drawn under ``Subkey("noise-line", seedB)``.
-    ``F_A`` depends on each launch's A commitment, so B's peel mid half cannot
-    be prepared per job: ``noisy_quant_b`` runs against an all-zero ``F_A``
-    stand-in (``buffers.f1``, giving a zero mid half) and the pipeline rebuilds
-    that half per launch. The root readback (``.cpu()``) synchronizes the
-    stream, which is what makes ``seedB`` available to derive the noise key.
+    in-kernel, ``F_B`` here) plus ``F_A`` (Side.A addresses under the same
+    key) is drawn under ``Subkey("noise-line", seedB)``. The peel mid half
+    still goes through the launch path so ``noisy_quant_b`` runs against an
+    all-zero ``F_A`` stand-in here. The root readback (``.cpu()``) synchronizes
+    the stream, which is what makes ``seedB`` available to derive the noise key.
     """
     from pearl_gemm import (
         LABEL_F2,
@@ -159,6 +158,7 @@ def prepare_layer(state: LayerState, job: MiningJob) -> JobContext | None:
         target=job.target,
         key_a_dev=buffers.key_a_dev,
         seed_b_dev=buffers.seed_b_dev,
+        noise_key_b_dev=buffers.noise_key_b_dev,
         threshold_dev=buffers.threshold_dev,
         f2=buffers.f2,
         e2=buffers.e2,

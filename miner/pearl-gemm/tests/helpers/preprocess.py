@@ -12,9 +12,10 @@ path:
 * the noised quantized operand ``B'`` (n x k, FP8) with its per-row scales,
 * the ``-(beta_B (.) E_B)`` half of the peel.
 
-v4 draws ``F_A`` from ``noise seedA``, which depends on A's commitment, so the
-mid half of B's peel ``(beta_B (.) E_B@F_B - B') @ F_A^T`` is per-A: see
-:meth:`MinerContext.b_peel_for` (the kernel-side product).
+Both F bases are keyed by ``noise seedB`` (``F_A`` uses ``Side.A`` addresses).
+The mid half of B's peel ``(beta_B (.) E_B@F_B - B') @ F_A^T`` is therefore a
+job constant; :meth:`MinerContext.b_peel_for` still accepts a launch's
+``F_A`` lines for tests that rebuild the peel.
 
 Fidelity: operand construction uses the protocol ``Fp8QuantScheme`` ops --
 plain device-agnostic torch -- executed on GPU tensors via a small adapter
@@ -122,12 +123,12 @@ class MinerContext:
 
     key_a: bytes  # keyA: A's opening key (header-derived)
     key_b: bytes  # keyB: B's opening key (header-derived)
-    seed_b: bytes  # noise seedB (B's F basis / E lines; the B-side stamp)
+    seed_b: bytes  # noise seedB (both F bases / B's E lines; the B-side stamp)
 
     e2: torch.Tensor  # (n x r) FP8, on GPU: E_B
     f2: torch.Tensor  # (r x k) FP8, on GPU: F_B
     b_prime: torch.Tensor  # (n x k) FP8, on GPU
-    b_peel: torch.Tensor  # (n x 2r) BF16, on GPU: [ 0 | -(beta_B (.) E_B) ] (mid is per-A)
+    b_peel: torch.Tensor  # (n x 2r) BF16, on GPU: [ 0 | -(beta_B (.) E_B) ] until filled for an F_A
     alpha_b: torch.Tensor  # (n x 1) BF16, on GPU
     beta_b: torch.Tensor  # (n x 1) BF16, on GPU
     l2_b: torch.Tensor  # (n x 1) BF16, on GPU: floored row rms the scales came from
@@ -142,7 +143,9 @@ class MinerContext:
         return OperandNoiser(self.seed_b, Side.B, self.r, self.k, self.hardware.compute)
 
     def noise_a(self, seed_a: bytes) -> OperandNoiser:
-        return OperandNoiser(seed_a, Side.A, self.r, self.k, self.hardware.compute)
+        return OperandNoiser(
+            seed_a, Side.A, self.r, self.k, self.hardware.compute, f_seed=self.seed_b
+        )
 
     def b_peel_for(self, f1_lines: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
         """The complete ``(n x 2r)`` peel for one A's ``(k x r)`` ``F_A`` draw

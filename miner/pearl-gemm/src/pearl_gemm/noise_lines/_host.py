@@ -43,8 +43,9 @@ def noise_lines(
     isqrt L2 normalization to 256, e4m3 rounding
     (``miner_base.noise.OperandNoiser._lines``).
 
-    For the F basis: draw ``k`` lines under ``LABEL_F1`` (A's key) /
-    ``LABEL_F2`` (B's key) and materialize any factor passed raw to a prep
+    For the F basis: draw ``k`` lines under ``LABEL_F1`` / ``LABEL_F2``
+    with B's noise-line key (both F bases are keyed by seedB; ``LABEL_F1``
+    is the ``Side.A`` address) and materialize any factor passed raw to a prep
     kernel with ``factor = out.t().contiguous()``. ``pack_noise_factor``
     accepts the transpose directly and returns a contiguous packed blob; at
     ``R == PACKED_NOISE_K`` the ``(k, R)`` draw viewed as int8 already *is*

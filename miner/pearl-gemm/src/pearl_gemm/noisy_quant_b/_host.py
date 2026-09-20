@@ -3,9 +3,10 @@
 The B side runs the identical fused kernel as ``noisy_quant`` on mirrored
 operands: the noise dot ``E2 @ F2`` consumes
 ``pack_noise_factor(F2)`` and the peel contraction consumes raw ``F1``, with
-E2 lines drawn under B's noise-line key at the ``B | E`` address. In cert-v4
-``F1`` (= ``F_A``) is per launch, so production launches pass a zero ``F1``
-and complete the peel's mid half per launch with :func:`b_peel_for_a`.
+E2 lines drawn under B's noise-line key at the ``B | E`` address. ``F1``
+(= ``F_A``) is also keyed by seedB (``Side.A`` addresses). Production still
+passes a zero ``F1`` at job prep and completes the peel mid half with
+:func:`b_peel_for_a` from those job-constant lines.
 """
 
 import cutlass.cute as cute
@@ -156,16 +157,15 @@ def b_peel_for_a(
 ) -> torch.Tensor:
     """B's ``(n, 2R)`` peel for one A: ``[(beta_b (.) E_B@F_B - B') @ F_A^T | -(beta_b (.) E_B)]``.
 
-    v4 draws ``F_A`` from the launch's own ``noise seedA``, so the mid half is a
-    per-launch product over all of ``B'`` (an ``(n, k) x (k, R)`` FP8 GEMM: one
-    extra streaming read of the weight per mined forward). It is computed as
+    ``F_A`` is keyed by ``noise seedB`` (``Side.A`` addresses), so the mid half
+    is a job-constant product over ``B'``. It is computed as
     ``beta_b (.) (E_B @ (F_B @ F_A^T)) - B' @ F_A^T``; the reference's ``(n, k)``
     BF16 difference never materializes. The mid half is the reference-only
     (tolerance) path; the second half is the per-job block ``noisy_quant_b``
     left in ``b_peel`` (launched with a zero ``f1``), copied through.
 
     ``f1_lines`` is the ``(k, R)`` ``noise_lines(..., LABEL_F1, ...)`` draw
-    under A's noise-line key; ``e2``/``f2``/``beta_b`` are ``noisy_quant_b``'s
+    under B's noise-line key; ``e2``/``f2``/``beta_b`` are ``noisy_quant_b``'s
     outputs/inputs for the same job.
 
     Contract (every operand contiguous, on one CUDA device; ``k % 16 == 0``

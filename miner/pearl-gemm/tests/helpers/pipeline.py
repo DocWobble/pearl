@@ -9,11 +9,11 @@ and runs four GPU stages, all launch-only (no D2H sync, CUDA-graph capturable):
     2. commit   -- one keyed BLAKE3 Merkle root per blob + fused per-block
                    stats partials + on-GPU finalize of A's keys (seedA,
                    noise-line key, jackpot key)
-    3. noise    -- F_A from A's noise-line key (``noise_lines``), then
+    3. noise    -- F_A from B's noise-line key (``noise_lines``, Side.A), then
                    combine partials -> alpha/beta, E_A in-kernel, and
                    A' = Q(alpha (.) A + beta (.) E_A@F_A) + peel columns
     4. gemm     -- fused FP8 UMMA + in-register lottery + BF16 peel + unscale
-                   (B's peel mid half is re-derived per launch from F_A)
+                   (B's peel mid half is formed from the job-constant F_A)
 
 Only stage 1 reads the BF16 activation: stages 2 and 3 both consume the two
 committed blobs, so the noise stage is protocol-canonical by construction
@@ -119,6 +119,9 @@ class MinerPipeline:
 
         self.key_a = torch.frombuffer(bytearray(ctx.key_a), dtype=torch.uint8).to(device)
         self.seed_b = torch.frombuffer(bytearray(ctx.seed_b), dtype=torch.uint8).to(device)
+        self.noise_key_b = torch.frombuffer(bytearray(ctx.noise_key_b), dtype=torch.uint8).to(
+            device
+        )
         self.p_a = ctx.config.p_a(m)
         codes_shape, scales_shape = pre_quant_output_shapes(m, ctx.k)
         self.codes = torch.zeros(codes_shape, dtype=torch.int8, device=device)
@@ -194,7 +197,7 @@ class MinerPipeline:
         return self.a_keys[64:96]
 
     def stage_prepare(self) -> None:
-        noise_lines(self.noise_key_a, LABEL_F1, self.f1_lines)
+        noise_lines(self.noise_key_b, LABEL_F1, self.f1_lines)
         noisy_quant(
             self.codes,
             self.scales,

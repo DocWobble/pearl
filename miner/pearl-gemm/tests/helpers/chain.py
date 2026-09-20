@@ -49,6 +49,7 @@ class CommittedA:
     root_scales: torch.Tensor
     commit_stats: torch.Tensor
     a_keys_dev: torch.Tensor  # (96,) u8 on device
+    seed_b: bytes = SEED_B
 
     @property
     def a_keys(self) -> AKeys:
@@ -68,9 +69,15 @@ class CommittedA:
 
     def noise_a(self, k: int, compute=None) -> OperandNoiser:
         noiser = OperandNoiser(
-            self.seed_a, Side.A, R, k, compute or hardware_for(Device.BLACKWELL).compute
+            self.seed_a,
+            Side.A,
+            R,
+            k,
+            compute or hardware_for(Device.BLACKWELL).compute,
+            f_seed=self.seed_b,
         )
         assert noiser._key == noise_line_key(self.seed_a)
+        assert noiser._f_key == noise_line_key(self.seed_b)
         return noiser
 
 
@@ -92,6 +99,7 @@ def commit_a(
         root_scales=torch.zeros(32, dtype=torch.uint8, device=device),
         commit_stats=torch.zeros(2 * (m * k // 512), dtype=torch.float32, device=device),
         a_keys_dev=torch.zeros(96, dtype=torch.uint8, device=device),
+        seed_b=seed_b,
     )
     roots = torch.zeros(
         tensor_hash_workspace_bytes(m, k, hash_config), dtype=torch.uint8, device=device

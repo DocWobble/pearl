@@ -53,11 +53,13 @@ def test_lines_match_reference_noiser(label_name, count):
     """
     seed_a, seed_b = _seeds()
     label, side, factor = _LABELS[label_name]
-    seed = seed_a if side is Side.A else seed_b
-    noiser = OperandNoiser(seed, side, R, count, hardware_for(Device.BLACKWELL).compute)
-    assert noiser._key == noise_line_key(seed)
+    e_seed = seed_a if side is Side.A else seed_b
+    noiser = OperandNoiser(
+        e_seed, side, R, count, hardware_for(Device.BLACKWELL).compute, f_seed=seed_b
+    )
+    line_key = noiser._f_key if factor is Factor.F else noiser._key
     ref = noiser._lines(factor, range(count))
-    got = _device_lines(noiser._key, label, count)
+    got = _device_lines(line_key, label, count)
     assert torch.equal(got.view(torch.uint8), ref.view(torch.uint8))
 
 
@@ -65,17 +67,16 @@ def test_f_basis_assembly_matches_reference():
     """Transposed draws equal ``OperandNoiser.F`` per side (the memoized basis)."""
     seed_a, seed_b = _seeds()
     k = 1536
-    noise_a = OperandNoiser(seed_a, Side.A, R, k, hardware_for(Device.BLACKWELL).compute)
+    noise_a = OperandNoiser(
+        seed_a, Side.A, R, k, hardware_for(Device.BLACKWELL).compute, f_seed=seed_b
+    )
     noise_b = OperandNoiser(seed_b, Side.B, R, k, hardware_for(Device.BLACKWELL).compute)
-    f_a = _device_lines(noise_line_key(seed_a), LABEL_F1, k).t().contiguous()
+    f_a = _device_lines(noise_line_key(seed_b), LABEL_F1, k).t().contiguous()
     f_b = _device_lines(noise_line_key(seed_b), LABEL_F2, k).t().contiguous()
     assert torch.equal(f_a.view(torch.uint8), noise_a.F().view(torch.uint8))
     assert torch.equal(f_b.view(torch.uint8), noise_b.F().view(torch.uint8))
-    # The sides are keyed apart: the same seed under B's address is a different draw.
-    assert not torch.equal(
-        _device_lines(noise_line_key(seed_a), LABEL_F2, k).view(torch.uint8),
-        f_a.t().contiguous().view(torch.uint8),
-    )
+    # Same seedB, different Side addresses: F_A and F_B are distinct draws.
+    assert not torch.equal(f_a.view(torch.uint8), f_b.view(torch.uint8))
 
 
 def test_e_draws_match_reference_noiser():

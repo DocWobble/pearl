@@ -1,8 +1,8 @@
 """The with-peel scheme: stacked rows + the single fused tile kernel.
 
-Recall the algebra (each side X draws its own factors
-``E_X``, ``F_X`` from its noise seed; the injected rank-r noise is
-``N_X = E_X @ F_X``):
+Recall the algebra (``E_X`` from that side's noise seed; both ``F_A``
+and ``F_B`` from ``noise seedB``, distinguished by the ``Side`` address;
+the injected rank-r noise is ``N_X = E_X @ F_X``):
 
     A' = Q(A + EA @ FA)                                  # m x k, FP8
     B' = Q(B + EB @ FB)                                  # n x k, FP8

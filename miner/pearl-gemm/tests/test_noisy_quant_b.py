@@ -116,7 +116,7 @@ def _noisers(seed_b: bytes, k: int, hw=None):
     """The reference per-side noisers: B's from ``seed_b``, A's from the probe seed."""
     compute = (hw or hardware_for(Device.BLACKWELL)).compute
     return (
-        OperandNoiser(_SEED_A_PROBE, Side.A, R, k, compute),
+        OperandNoiser(_SEED_A_PROBE, Side.A, R, k, compute, f_seed=seed_b),
         OperandNoiser(seed_b, Side.B, R, k, compute),
     )
 

@@ -32,9 +32,10 @@ subkeyed under ``pearl/v4/FP8/noise-line``, and each line is addressed by a
   * ``F_X`` (r x k) -- the side's shared basis: lines ``0..k``, transposed.
     Never varies across experts.
 
-Each side draws from its OWN seed (``F_A`` from ``noise seedA``, ``F_B`` from
-``noise seedB``). The address omits ``k`` and ``r``: the seed already binds
-them (through ``pA`` / ``pB``).
+``E_A`` is keyed by ``noise seedA``. Both F bases are keyed by ``noise seedB``
+(``F_A`` uses ``Side.A`` addresses so it is a distinct draw from ``F_B``);
+``E_B`` is keyed by ``noise seedB``. The address omits ``k`` and ``r``: the
+seed already binds them (through ``pA`` / ``pB``).
 """
 
 from __future__ import annotations
@@ -68,7 +69,12 @@ class _Factor(enum.IntEnum):
 
 
 class OperandNoiser:
-    """One side's noise factors (``E_X``, ``F_X``) from its noise seed."""
+    """One side's noise factors (``E_X``, ``F_X``).
+
+    ``E`` lines use ``noise_seed``. ``F`` lines use ``f_seed`` when given
+    (``F_A`` is keyed by seedB: construct the A-side noiser with
+    ``f_seed=seed_b``), otherwise the same seed as ``E``.
+    """
 
     def __init__(
         self,
@@ -77,8 +83,12 @@ class OperandNoiser:
         rank: int,
         common_dim: int,
         compute: ComputeOps,
+        *,
+        f_seed: bytes | None = None,
     ):
+        self.seed = noise_seed
         self._key = subkey(LABEL_NOISE_LINE, noise_seed)
+        self._f_key = subkey(LABEL_NOISE_LINE, f_seed if f_seed is not None else noise_seed)
         self.side = side
         self.r = rank
         self.k = common_dim
@@ -101,8 +111,9 @@ class OperandNoiser:
         ``side(1) | factor(1) | line(u32 LE)``, zero-padded to 64 bytes (one
         BLAKE3 block). No ``k``/``r`` in the address -- the seed binds them."""
         material = (bytes([self.side, factor]) + encode_u32_le(line)).ljust(64, b"\x00")
-        assert len(self._key) == 32 and len(material) == 64
-        return blake3(material, key=self._key).digest(length=self.r)
+        key = self._f_key if factor is _Factor.F else self._key
+        assert len(key) == 32 and len(material) == 64
+        return blake3(material, key=key).digest(length=self.r)
 
     def _lines(self, factor: _Factor, indices) -> torch.Tensor:
         """Stack of keyed, L2-normalized lines, one per index; the draw is per line."""
