@@ -71,12 +71,11 @@ export default function SendTransaction() {
 
       // A fresh reading rather than the polled one: the peer set can change
       // between polls, and a peerless send is the failure this guards.
+      // The notice and the disabled button follow `connections`, so they
+      // clear by themselves once the poll sees a peer; an `error` would not.
       const currentConnections = await fetchConnections();
       setConnections(currentConnections);
-      if (currentConnections === 0) {
-        setError(NO_PEERS_MESSAGE);
-        return;
-      }
+      if (currentConnections === 0) return;
 
       try {
         const feeRate = estimatedFees[feeLevel];
