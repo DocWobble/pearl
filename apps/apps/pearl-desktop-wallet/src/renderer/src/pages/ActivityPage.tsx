@@ -35,6 +35,7 @@ type PendingAction = 'rebroadcast' | 'remove';
 
 interface PendingNotice {
   txid: string;
+  action: PendingAction;
   tone: 'success' | 'warning' | 'error';
   message: string;
 }
@@ -61,12 +62,13 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
     setNotice(null);
     try {
       const message = await run();
-      if (message) setNotice({ txid, tone: 'success', message });
+      if (message) setNotice({ txid, action, tone: 'success', message });
     } catch (err) {
       const message = getErrorMessage(err);
       const notRelayed = action === 'rebroadcast' && isNotRelayedError(message);
       setNotice({
         txid,
+        action,
         tone: notRelayed ? 'warning' : 'error',
         message: notRelayed ? REBROADCAST_NOT_RELAYED_MESSAGE : message,
       });
@@ -145,7 +147,7 @@ export default function ActivityPage({ onBack }: ActivityPageProps) {
                   : 'bg-red-50 text-red-800'
             }`}
           >
-            {notice.tone === 'error'
+            {notice.action === 'rebroadcast' && notice.tone === 'error'
               ? `Rebroadcast rejected; the pending send was removed from the wallet. ${notice.message}`
               : notice.message}
           </div>

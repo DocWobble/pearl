@@ -135,7 +135,7 @@ var helpDescsEnUS = map[string]string{
 	"gettransactionresult-timereceived":    "The earliest Unix time this transaction was known to exist",
 	"gettransactionresult-details":         "Additional details for each recorded wallet credit and debit",
 	"gettransactionresult-hex":             "The transaction encoded as a hexadecimal string",
-	"gettransactionresult-relayed":         "Only for an unconfirmed transaction under SPV: whether a peer requested the transaction after an announcement made since the daemon started. false means it has not been announced this session, not that the network lacks it",
+	"gettransactionresult-relayed":         "Only for an unconfirmed send under SPV (incoming payments never carry it): whether a peer requested the transaction after an announcement made since the daemon started. false means it has not been announced this session, not that the network lacks it",
 	"gettransactionresult-lastrelaytime":   "Only when relayed is true: the Unix time a peer last requested the transaction",
 
 	// GetTransactionDetailsResult help.
@@ -234,7 +234,7 @@ var helpDescsEnUS = map[string]string{
 	"listtransactionsresult-trusted":            "Unset",
 	"listtransactionsresult-bip125-replaceable": "Unset",
 	"listtransactionsresult-abandoned":          "Unset",
-	"listtransactionsresult-relayed":            "Only for an unconfirmed transaction under SPV: whether a peer requested the transaction after an announcement made since the daemon started. false means it has not been announced this session, not that the network lacks it",
+	"listtransactionsresult-relayed":            "Only for an unconfirmed send under SPV (incoming payments never carry it): whether a peer requested the transaction after an announcement made since the daemon started. false means it has not been announced this session, not that the network lacks it",
 	"listtransactionsresult-lastrelaytime":      "Only when relayed is true: the Unix time a peer last requested the transaction",
 
 	// ListTransactionsCmd help.

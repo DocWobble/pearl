@@ -144,7 +144,12 @@ shows is the evidence it has for the current session:
   session (typically a transaction sent before the last daemon restart). It
   may well already be in the network; this is not a verdict that it is lost.
 
-From a pending transaction's detail view:
+The status and the two actions below apply to sends this wallet made. An
+incoming payment that is still unconfirmed shows plain `unconfirmed`: the
+daemon never announced it, so there is no relay evidence to report and no
+send to rebroadcast or abandon.
+
+From a pending send's detail view:
 
 - **Rebroadcast** — announces it again, pending ancestors first, via
   `rebroadcasttransaction`. Success means a peer requested it. "No peer
