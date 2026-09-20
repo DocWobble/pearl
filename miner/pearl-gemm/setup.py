@@ -5,7 +5,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 support for the installed CUDA PyTorch runtime.
+    import tomli as tomllib
 import urllib.error
 import urllib.request
 import warnings
@@ -86,7 +89,11 @@ CORES_PER_JOB = 1
 FALLBACK_MAX_JOBS = 4
 KB_PER_GB = 1024 * 1024
 NVCC_THREAD_COUNT = "4"
+# The legacy extension is unchanged.  The opt-in optimized extension is compiled only for SM120.
+SM120_BACKEND = _env_flag("PEARL_SM120_BACKEND", "FALSE")
+SM120_ONLY = _env_flag("PEARL_SM120_ONLY", "FALSE")
 COMPUTE_CAPABILITY = "arch=compute_90a,code=sm_90a"
+SM120_COMPUTE_CAPABILITY = "arch=compute_120,code=sm_120"
 
 
 def linux_total_ram_kb() -> int:
@@ -335,11 +342,20 @@ ext_modules = []
 
 # Needed even when SKIP_CUDA_BUILD so that sdist includes .hpp files for source compilation
 cutlass_dir = ROOT_DIR / "third_party" / "cutlass"
-try:
-    subprocess.run(["git", "submodule", "update", "--init", str(cutlass_dir)], check=True)
-except (subprocess.CalledProcessError, FileNotFoundError) as e:
-    print(f"Warning: Could not initialize git submodules: {e}")
-    print("This may be expected in containerized environments or when git is not available.")
+if SM120_BACKEND:
+    # v0.6 pins CUTLASS 4.6.x for the SM120 branch.  Do not let submodule update silently
+    # replace the vendored version with Pearl's historical gitlink.
+    cutlass_version = subprocess.check_output(
+        ["git", "-C", str(cutlass_dir), "describe", "--tags", "--exact-match"], text=True
+    ).strip()
+    if not cutlass_version.startswith("v4.6."):
+        raise RuntimeError(f"SM120 requires vendored CUTLASS 4.6.x, found {cutlass_version}")
+else:
+    try:
+        subprocess.run(["git", "submodule", "update", "--init", str(cutlass_dir)], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Warning: Could not initialize git submodules: {e}")
+        print("This may be expected in containerized environments or when git is not available.")
 
 assert os.path.exists(cutlass_dir), f"cutlass_dir {cutlass_dir} does not exist"
 
@@ -434,20 +450,50 @@ if not SKIP_CUDA_BUILD:
     # Get PyTorch library path for rpath
     torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
 
-    ext_modules.append(
-        CUDAExtension(
-            name="pearl_gemm_cuda",
-            sources=sources,
-            extra_compile_args={
-                "cxx": gcc_flags + feature_args,
-                "nvcc": append_nvcc_threads(nvcc_flags + arch_flags + feature_args),
-            },
-            extra_link_args=[f"-Wl,-rpath,{torch_lib_path}", "-Wl,-rpath,$ORIGIN"],
-            include_dirs=include_dirs,
-            # Without this we get an error about cuTensorMapEncodeTiled not defined
-            libraries=["cuda"],
+    if not SM120_ONLY:
+        ext_modules.append(
+            CUDAExtension(
+                name="pearl_gemm_cuda",
+                sources=sources,
+                extra_compile_args={
+                    "cxx": gcc_flags + feature_args,
+                    "nvcc": append_nvcc_threads(nvcc_flags + arch_flags + feature_args),
+                },
+                extra_link_args=[f"-Wl,-rpath,{torch_lib_path}", "-Wl,-rpath,$ORIGIN"],
+                include_dirs=include_dirs,
+                # Without this we get an error about cuTensorMapEncodeTiled not defined
+                libraries=["cuda"],
+            )
         )
-    )
+
+    if SM120_BACKEND:
+        # Keep the experimental backend separate from the historical extension.  It must not
+        # alter reference protocol serialization or silently replace the known-working path.
+        sm120_include_dirs = [CSRC_DIR / "sm120", CSRC_DIR, CSRC_DIR / "gemm", cutlass_dir / "include"]
+        cuda_target_include = Path(CUDA_HOME) / "targets" / f"{platform.machine()}-linux" / "include"
+        if cuda_target_include.exists():
+            sm120_include_dirs.append(cuda_target_include)
+        ext_modules.append(
+            CUDAExtension(
+                name="pearl_sm120_cuda",
+                sources=[
+                    "csrc/sm120/sm120_pybind.cpp",
+                    "csrc/sm120/sm120_backend.cu",
+                    "csrc/sm120/sm120_noise.cu",
+                    "csrc/sm120/sm120_dense_reference.cu",
+                    "csrc/sm120/sm120_fused_kernel.cu",
+                ],
+                extra_compile_args={
+                    "cxx": ["-O3", "-std=c++17", "-fvisibility=hidden"],
+                    "nvcc": append_nvcc_threads([
+                        "-O3", "-std=c++17", "-gencode", SM120_COMPUTE_CAPABILITY
+                    ]),
+                },
+                extra_link_args=[f"-Wl,-rpath,{torch_lib_path}", "-Wl,-rpath,$ORIGIN"],
+                include_dirs=sm120_include_dirs,
+                libraries=["cuda"],
+            )
+        )
 
 
 def get_wheel_url() -> tuple[str, str]:

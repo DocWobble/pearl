@@ -1,0 +1,99 @@
+{
+  "checked_at": "2026-09-20T12:43:29.472739+00:00",
+  "ctest": {
+    "command": [
+      "ctest",
+      "--output-on-failure"
+    ],
+    "returncode": 0,
+    "stdout": "Test project /home/director/arcology-machine-earning/pearl/build/sm120\n    Start 1: sm120_reference_vectors\n1/6 Test #1: sm120_reference_vectors ..........   Passed    0.00 sec\n    Start 2: sm120_transcript_parity\n2/6 Test #2: sm120_transcript_parity ..........   Passed    0.00 sec\n    Start 3: sm120_blake3_parity\n3/6 Test #3: sm120_blake3_parity ..............   Passed    0.00 sec\n    Start 4: sm120_live_replay\n4/6 Test #4: sm120_live_replay ................   Passed    0.00 sec\n    Start 5: sm120_submission_guard\n5/6 Test #5: sm120_submission_guard ...........   Passed    0.00 sec\n    Start 6: sm120_dense_reference_cuda\n6/6 Test #6: sm120_dense_reference_cuda .......***Skipped   0.00 sec\n\n100% tests passed, 0 tests failed out of 6\n\nTotal Test time (real) =   0.01 sec\n\nThe following tests did not run:\n\t  6 - sm120_dense_reference_cuda (Skipped)\n",
+    "stderr": ""
+  },
+  "fixture_summary": {
+    "count": 160,
+    "all_verified": true,
+    "all_target_passes": true
+  },
+  "gpu_parity": {},
+  "rust_verifier_gate": {
+    "command": [
+      "/home/director/.cargo/bin/cargo",
+      "test",
+      "--manifest-path",
+      "zk-pow/Cargo.toml",
+      "--test",
+      "sm120_verifier_gate",
+      "--",
+      "--ignored",
+      "--nocapture"
+    ],
+    "returncode": 0,
+    "stdout": "\nrunning 1 test\ntest canonical_verifier_accepts_1000_of_1000_rank128_vectors has been running for over 60 seconds\ntest canonical_verifier_accepts_1000_of_1000_rank128_vectors ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 168.77s\n\n",
+    "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s\n     Running tests/sm120_verifier_gate.rs (zk-pow/target/debug/deps/sm120_verifier_gate-6c3f5b7cc6bea430)\n"
+  },
+  "corrupt_gate": {
+    "command": [
+      "/home/director/.cargo/bin/cargo",
+      "test",
+      "--manifest-path",
+      "zk-pow/Cargo.toml",
+      "--test",
+      "sm120_corrupt_gate",
+      "--",
+      "--nocapture"
+    ],
+    "returncode": 0,
+    "stdout": "\nrunning 1 test\ntest canonical_verifier_rejects_corrupted_rank128_fixtures ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s\n\n",
+    "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s\n     Running tests/sm120_corrupt_gate.rs (zk-pow/target/debug/deps/sm120_corrupt_gate-017ab89d63133c24)\n"
+  },
+  "stress": {
+    "requested_seconds": 1800,
+    "status": "blocked",
+    "gate_pass": false,
+    "error": "CUDA GPU required for SM120 stress gate"
+  },
+  "tuning": {
+    "status": "blocked",
+    "error": "No CUDA GPUs are available",
+    "shapes": [
+      [
+        128,
+        128
+      ],
+      [
+        128,
+        64
+      ],
+      [
+        64,
+        128
+      ],
+      [
+        64,
+        64
+      ]
+    ],
+    "batches": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "warmup": 10,
+    "iterations": 100,
+    "results": []
+  },
+  "gates": {
+    "GATE_1_reference_vector_parity": false,
+    "GATE_2_canonical_verifier_1000_of_1000": true,
+    "GATE_3_corrupt_proofs_rejected": true,
+    "GATE_4_30m_cuda_stress": false,
+    "GATE_5_no_winner_overflow": false,
+    "GATE_6_no_stale_generation_submission": false
+  },
+  "release_enabled": false,
+  "reason": "Live submission remains disabled until every canonical gate is proven."
+}

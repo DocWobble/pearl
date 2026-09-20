@@ -28,6 +28,7 @@ from pearl_mining import (
 from .block_submission import create_proof
 from .gateway_client import DummyMiningClient, MinerRpcConfig, MiningClient
 from .settings import MinerSettings
+from .sm120_events import Sm120EventLogger
 
 _LOGGER = get_logger(__name__)
 
@@ -53,6 +54,9 @@ class AsyncLoopManager:
         self._conf = miner_settings if miner_settings is not None else MinerSettings()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mining_job: MiningJob | None = None
+        self._job_generation = 0
+        self._submission_enabled = False
+        self._events = Sm120EventLogger()
         self._stop_event = asyncio.Event()
         self._client_config = miner_rpc_config
 
@@ -86,11 +90,20 @@ class AsyncLoopManager:
         self._client = _make_client(self._conf, self._client_config)
         # initialize the mining job synchronously for the first time
         self._mining_job = self._client.get_mining_info()
+        self._job_generation = 1
+        self._submission_enabled = True
+        self._events.emit("job_received", self._job_generation, self._mining_job.incomplete_header_bytes)
         self._thread = Thread(target=self._run_async_loop, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         """Stop the async loop manager, wait for the thread to finish."""
+        self._submission_enabled = False
+        self._events.emit(
+            "disconnect",
+            self._job_generation,
+            self._mining_job.incomplete_header_bytes if self._mining_job else None,
+        )
         if self._pool is not None:
             self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
@@ -130,8 +143,34 @@ class AsyncLoopManager:
         if self._pool is None:
             raise AssertionError("Thread Pool Executor is not initialized")
 
+        # A CUDA callback may outlive a gateway refresh.  Reject stale work before
+        # proof construction and carry the same generation check into the worker.
+        if (
+            not self._submission_enabled
+            or self._mining_job is None
+            or mining_job != self._mining_job
+        ):
+            _LOGGER.info("Discarding stale or disconnected winner before submission")
+            return
+        expected_generation = self._job_generation
+        self._events.emit("winner_found", expected_generation, mining_job.incomplete_header_bytes)
+
+        def is_current() -> bool:
+            return (
+                self._submission_enabled
+                and self._job_generation == expected_generation
+                and self._mining_job == mining_job
+            )
+
         def on_block_submitted() -> None:
             self.blocks_submitted += 1
+            self._events.emit(
+                "share_submitted",
+                expected_generation,
+                mining_job.incomplete_header_bytes,
+                share_target=mining_job.target,
+                result="ACCEPTED",
+            )
 
         future = self._loop.run_in_executor(
             self._pool,
@@ -141,6 +180,7 @@ class AsyncLoopManager:
             mining_job,
             self._client_config,
             on_block_submitted,
+            is_current,
         )
 
         self._block_results.append(future)
@@ -215,9 +255,23 @@ class AsyncLoopManager:
                             f"Got mining job - Header Bytes: {self._mining_job.incomplete_header_bytes.hex()}, "
                             f"Target: {self._mining_job.target}"
                         )
+                    self._mining_job = new_mining_job
+                    self._job_generation += 1
+                    self._submission_enabled = True
+                    self._events.emit(
+                        "generation_changed",
+                        self._job_generation,
+                        new_mining_job.incomplete_header_bytes,
+                    )
+                    self._events.emit(
+                        "job_received",
+                        self._job_generation,
+                        new_mining_job.incomplete_header_bytes,
+                    )
                     for c in self._mining_job_changed_callbacks:
                         c()
-                self._mining_job = new_mining_job
+                else:
+                    self._mining_job = new_mining_job
             except Exception:
                 _LOGGER.exception("Failed to get mining info")
             await asyncio.sleep(1.0)  # Update every second
@@ -254,12 +308,16 @@ class AsyncLoopManager:
         mining_job: MiningJob,
         miner_rpc_config: MinerRpcConfig,
         on_block_submitted: Callable[[], None],
+        is_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Submit a block to the gateway.
 
         The PoW check has already been performed in the kernel during mining.
         We directly create the proof and submit it.
         """
+        if is_current is not None and not is_current():
+            _LOGGER.info("Discarding stale winner before proof construction")
+            return False
         _LOGGER.info("Block found, creating proof for submission.")
 
         # Create PlainProof from OpenedBlockInfo using non-noised A and B
@@ -284,6 +342,9 @@ class AsyncLoopManager:
             _LOGGER.debug("Plain proof verified")
 
         with _make_client(miner_settings, miner_rpc_config) as client:
+            if is_current is not None and not is_current():
+                _LOGGER.info("Discarding stale winner before network submission")
+                return False
             client.submit_plain_proof(plain_proof, mining_job)
 
         on_block_submitted()

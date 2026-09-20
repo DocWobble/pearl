@@ -1,0 +1,6 @@
+{
+  "requested_seconds": 1800,
+  "status": "blocked",
+  "gate_pass": false,
+  "error": "CUDA GPU required for SM120 stress gate"
+}

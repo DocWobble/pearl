@@ -1,3 +1,5 @@
+import os
+
 import pearl_gemm_cuda
 import torch
 
@@ -446,6 +448,53 @@ def noisy_gemm(
         inner_hash_counter: Optional tensor to count inner hashes (for testing/debugging).
         enable_debug: If True, enables debug mode for inner hash counting validation.
     """
+    sm120_winner = None
+    sm120_dispatch = (
+        os.environ.get("PEARL_SM120_BACKEND") == "1"
+        and os.environ.get("PEARL_SM120_FUSED") == "1"
+        and os.environ.get("PEARL_SM120_SEARCH_ONLY") == "1"
+        and A.is_cuda
+        and A.device == B.device
+        and torch.cuda.get_device_capability(A.device) == (12, 0)
+        and A.shape[0] >= 16
+        and B.shape[0] >= 16
+        and A.shape[0] % 16 == 0
+        and B.shape[0] % 16 == 0
+        and A.shape[1] >= 16 * 128
+        and A.shape[1] <= 65536
+        and A.shape[1] % 128 == 0
+        and A.shape[1] == B.shape[1]
+        and EAL.shape[1] == 128
+    )
+    if sm120_dispatch:
+        try:
+            import pearl_sm120_cuda
+
+            # Reuse Pearl's canonical noising kernels, then let SM120 own the
+            # exact transcript/winner decision over those same int8 buffers.
+            noise_A(A, EAL, AxEBL_fp16, ApEA, EAR_R_major, EBL_K_major,
+                    tile_size_m_noising_A, tile_size_k_noising_A,
+                    pipeline_stages_noising_A, k_blocks_per_split_noising_A)
+            noise_B(B, EBR, EARxBpEB_fp16, BpEB, EAR_K_major, EBL_R_major,
+                    tile_size_n_noising_B, tile_size_k_noising_B,
+                    pipeline_stages_noising_B, k_blocks_per_split_noising_B)
+            torch.cuda.current_stream(A.device).synchronize()
+            key_cpu = pow_key.detach().contiguous().view(torch.uint8).cpu()
+            target_cpu = pow_target.detach().contiguous().view(torch.uint8).cpu()
+            sm120_result = pearl_sm120_cuda.search(
+                ApEA.unsqueeze(0), BpEB, key_cpu, target_cpu,
+                A.shape[0], B.shape[0], A.shape[1], 0
+            )
+            if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
+                raise RuntimeError(f"SM120 search failed: {sm120_result}")
+            if sm120_result["winner_descriptors"]:
+                sm120_winner = sm120_result["winner_descriptors"][0]
+            run_noising_A = False
+            run_noising_B = False
+            skip_reduction = True
+        except ImportError:
+            sm120_dispatch = False
+
     pearl_gemm_cuda.noisy_gemm(
         A,
         B,
@@ -493,6 +542,12 @@ def noisy_gemm(
         inner_hash_counter,
         enable_debug,
     )
+    if sm120_winner is not None:
+        pearl_sm120_cuda.signal_header(
+            host_signal_header_pinned,
+            A.shape[0], B.shape[0], A.shape[1],
+            sm120_winner["tile_row"], sm120_winner["tile_col"],
+        )
 
 
 # Fake Tensor function for torch.compile support

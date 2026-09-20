@@ -1,3 +1,4 @@
+import os
 import struct
 
 import blake3
@@ -458,6 +459,55 @@ class NoisyGemm:
                     return True
         return False
 
+    @staticmethod
+    def _sm120_search(
+        A_noised: torch.Tensor,
+        B_noised: torch.Tensor,
+        pow_key: bytes,
+        pow_target: int,
+    ) -> tuple[bool, int | None, int | None] | None:
+        """Run the exact SM120 winner search when the experimental backend is requested.
+
+        ``None`` means the backend is unavailable or the active job geometry is outside
+        its contract.  A non-``None`` result means the backend made the decision, including
+        the no-winner case.  The caller still computes the complete C matrix so the existing
+        denoising and canonical proof path remains authoritative.
+        """
+        if (
+            os.environ.get("PEARL_SM120_BACKEND") != "1"
+            or os.environ.get("PEARL_SM120_FUSED") != "1"
+            or os.environ.get("PEARL_SM120_SEARCH_ONLY") != "1"
+        ):
+            return None
+        if (
+            not A_noised.is_cuda
+            or not B_noised.is_cuda
+            or not A_noised.is_contiguous()
+            or not B_noised.is_contiguous()
+        ):
+            return None
+        if torch.cuda.get_device_capability(A_noised.device) != (12, 0):
+            return None
+        m, k = A_noised.shape
+        k2, n = B_noised.shape
+        if k != k2 or m < 16 or n < 16 or m % 16 or n % 16 or k < 16 * 128 or k > 65536 or k % 128:
+            return None
+        try:
+            import pearl_sm120_cuda
+        except ImportError:
+            return None
+        key = torch.tensor(list(pow_key), dtype=torch.uint8)
+        target = torch.tensor(list(int(pow_target).to_bytes(32, "little")), dtype=torch.uint8)
+        result = pearl_sm120_cuda.search(
+            A_noised.unsqueeze(0), B_noised.T.contiguous(), key, target, m, n, k, 0
+        )
+        if result["cuda_errors"] or result["winner_overflow"]:
+            raise RuntimeError(f"SM120 search failed: {result}")
+        if not result["winner_descriptors"]:
+            return False, None, None
+        winner = result["winner_descriptors"][0]
+        return True, int(winner["tile_row"]), int(winner["tile_col"])
+
     def _tiled_matmul(
         self,
         A: torch.Tensor,
@@ -589,7 +639,16 @@ class NoisyGemm:
 
         EA_BpEB = torch.matmul(E_AL.to(torch.int32), EAR_BpEB)
 
-        C_noised, found_block = self._tiled_matmul(A_noised, B_noised, pow_key, pow_target)
+        sm120_result = self._sm120_search(A_noised, B_noised, pow_key, pow_target)
+        if sm120_result is None:
+            C_noised, found_block = self._tiled_matmul(A_noised, B_noised, pow_key, pow_target)
+        else:
+            found_block, tile_row, tile_col = sm120_result
+            # Keep the complete exact C result for the established denoising/proof path.
+            C_noised = torch.matmul(A_noised.to(torch.int32), B_noised.to(torch.int32))
+            if found_block:
+                assert tile_row is not None and tile_col is not None
+                self._record_opened_block(tile_row * self.hash_tile_h, tile_col * self.hash_tile_w)
 
         C = C_noised - A_EB - EA_BpEB
 
