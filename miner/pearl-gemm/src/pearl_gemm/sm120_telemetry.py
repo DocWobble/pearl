@@ -251,15 +251,11 @@ def format_sm120_rate(snapshot: Sm120TelemetrySnapshot) -> str:
     """Human-first line using the same H/s dimensional accounting as Krig."""
     return (
         "SM120_RATE "
-        f"generation={snapshot.generation} call={snapshot.call} "
         f"hashrate_ths={snapshot.total_hashrate_ths:.6f} "
         f"rolling_ths={snapshot.rolling_hashrate_ths:.6f} "
-        f"job_ths={snapshot.job_hashrate_ths:.6f} "
-        f"tiles_s={snapshot.total_target_tests_per_second:.3f} "
-        f"expected_opens_s={snapshot.total_expected_opens_per_second:.9e} "
-        f"candidates={snapshot.candidates} "
-        f"tail16_ratio={snapshot.tail_ratios_total[16]:.4f} "
-        f"tail20_ratio={snapshot.tail_ratios_total[20]:.4f} "
+        f"tiles_s={snapshot.total_target_tests_per_second:.0f} "
+        f"expected_opens_s={snapshot.total_expected_opens_per_second:.3e} "
+        f"tail16_ratio={snapshot.tail_ratios_total[16]:.3f} "
         f"winners={snapshot.winners}"
     )
 
