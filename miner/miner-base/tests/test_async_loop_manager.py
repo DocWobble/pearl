@@ -98,7 +98,8 @@ class TestAsyncLoopManagerGetMiningJob:
     def test_get_mining_job_returns_current_job(self, miner_config):
         manager = AsyncLoopManager(miner_config, None)
 
-        assert manager.get_mining_job() is None
+        with pytest.raises(RuntimeError, match="Mining job is not initialized"):
+            manager.get_mining_job()
 
         mock_job = Mock(spec=MiningJob)
         manager._mining_job = mock_job
