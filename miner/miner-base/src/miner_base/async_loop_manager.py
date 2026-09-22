@@ -180,12 +180,37 @@ class AsyncLoopManager:
 
         def on_block_submitted() -> None:
             self.blocks_submitted += 1
+            event_fields: dict[str, object] = {
+                "share_target": mining_job.target,
+                "result": "ACCEPTED",
+            }
+            try:
+                mining_config = opened_block_info.get_mining_config()
+                adjusted_target = mining_job.adjust_target(mining_config)
+                if opened_block_info.A is not None:
+                    k = int(opened_block_info.A.shape[1])
+                    daf = (
+                        len(opened_block_info.A_row_indices)
+                        * len(opened_block_info.B_column_indices)
+                        * k
+                    )
+                    event_fields.update(
+                        {
+                            "adjusted_target": adjusted_target,
+                            "daf": daf,
+                            "expected_hash_work": (
+                                float(daf) * ((1 << 256) / (adjusted_target + 1))
+                            ),
+                        }
+                    )
+            except (ValueError, AttributeError, TypeError):
+                _LOGGER.exception("Could not derive pool-equivalent work for submitted share")
+
             self._events.emit(
                 "share_submitted",
                 expected_generation,
                 mining_job.incomplete_header_bytes,
-                share_target=mining_job.target,
-                result="ACCEPTED",
+                **event_fields,
             )
 
         future = self._loop.run_in_executor(

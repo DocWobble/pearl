@@ -22,6 +22,7 @@ def main() -> None:
     os.environ["PEARL_SM120_SEARCH_ONLY"] = "1"
     result = pearl_sm120_cuda.search(candidate_a, b_transposed, key, target, 16, 16, 2048, 7)
     assert result["candidates"] == 1 and result["valid_candidate_work"] == 16 * 16 * 2048, result
+    assert result["target_tests"] == 1, result
     assert result["winners"] == 1, result
     assert result["winner_overflow"] is False, result
     assert result["cuda_errors"] == 0, result
@@ -29,6 +30,30 @@ def main() -> None:
         "generation": 7, "candidate_index": 0, "tile_row": 0, "tile_col": 0,
         "reconstruction_slot": 0, "jackpot_hash": result["winner_descriptors"][0]["jackpot_hash"],
     }], result
+
+    # Production v08 entry point keeps the key and target CUDA-resident and
+    # launches on PyTorch's current stream.
+    device_result = pearl_sm120_cuda.search_device(
+        candidate_a, b_transposed, key.cuda(), target.cuda(), 16, 16, 2048, 9
+    )
+    assert device_result["candidates"] == 1
+    assert device_result["target_tests"] == 1
+    assert device_result["winners"] == 1 and device_result["cuda_errors"] == 0, device_result
+    assert device_result["winner_descriptors"][0]["generation"] == 9
+
+    # WMMA is the v08 production default. Run the DP4A fallback over the exact
+    # same operands and require an identical jackpot hash, not merely a winner.
+    wmma_hash = device_result["winner_descriptors"][0]["jackpot_hash"]
+    os.environ["PEARL_SM120_WMMA"] = "0"
+    dp4a_result = pearl_sm120_cuda.search_device(
+        candidate_a, b_transposed, key.cuda(), target.cuda(), 16, 16, 2048, 10
+    )
+    assert dp4a_result["candidates"] == 1
+    assert dp4a_result["target_tests"] == 1
+    assert dp4a_result["winners"] == 1 and dp4a_result["cuda_errors"] == 0, dp4a_result
+    assert dp4a_result["winner_descriptors"][0]["generation"] == 10
+    assert dp4a_result["winner_descriptors"][0]["jackpot_hash"] == wmma_hash
+    os.environ["PEARL_SM120_WMMA"] = "1"
     # Exercise the production-shaped entry point: base operands and canonical noise
     # seeds enter the extension, and noised operands are materialized on the GPU.
     rows = torch.arange(16, device="cuda", dtype=torch.int32)
