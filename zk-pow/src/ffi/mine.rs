@@ -644,6 +644,73 @@ mod tests {
         assert_eq!(a_mine, a_verify, "a_noise_seed must match between miner and verifier");
     }
 
+    /// The verifier authenticates the opened strips against a Merkle root, but it
+    /// does not require preimages for unopened sibling subtrees.  This is an
+    /// important miner-side construction property: a search epoch only needs the
+    /// opened/active matrix region plus the opaque sibling CVs that bind it into
+    /// the declared tree.
+    ///
+    /// Mutating an unopened sibling, recomputing the root, and keeping every
+    /// opened matrix byte unchanged must therefore remain a canonical PlainProof.
+    #[test]
+    fn test_sparse_witness_accepts_opaque_unopened_sibling() {
+        let m = 32usize;
+        let n = 32usize;
+        let k = 2048usize;
+        let rank = 128u16;
+        let header = IncompleteBlockHeader::new_for_test(0x207FFFFF);
+        let contiguous_16: Vec<u32> = (0..16).collect();
+        let config = MiningConfiguration {
+            common_dim: k as u32,
+            rank,
+            mma_type: MMAType::Int7xInt7ToInt32,
+            rows_pattern: PeriodicPattern::from_list(&contiguous_16).unwrap(),
+            cols_pattern: PeriodicPattern::from_list(&contiguous_16).unwrap(),
+            moe: None,
+        };
+
+        let mut rng = rand::rng();
+        let mut proof = try_mine_one(
+            &mut rng,
+            m,
+            n,
+            k,
+            header,
+            config,
+            Some((0, 0)),
+            false,
+            SeedDerivation::Salted,
+        )
+        .unwrap()
+        .expect("easy target should produce a proof");
+
+        assert!(
+            !proof.a.proof.siblings.is_empty(),
+            "test geometry must leave at least one unopened A subtree"
+        );
+
+        let opened_before = proof.a.proof.leaf_data.clone();
+        let indices_before = proof.a.proof.leaf_indices.clone();
+
+        // Turn the unopened subtree into an opaque nonce.  We deliberately do
+        // not construct any matrix leaves behind this CV.
+        proof.a.proof.siblings[0][0] ^= 0x5a;
+        proof.a.proof.siblings[0][17] ^= 0xa5;
+
+        let job_key = compute_job_key(&header, &config);
+        proof.a.proof.root = proof
+            .a
+            .proof
+            .compute_root(job_key)
+            .expect("sparse Merkle proof must reconstruct a root");
+
+        assert_eq!(proof.a.proof.leaf_data, opened_before);
+        assert_eq!(proof.a.proof.leaf_indices, indices_before);
+
+        verify_plain_proof(&header, &proof, None, SeedDerivation::Salted)
+            .expect("canonical verifier must accept opaque unopened sibling CVs");
+    }
+
     #[test]
     fn test_verify_moe() {
         let e = 4;
