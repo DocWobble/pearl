@@ -408,6 +408,7 @@ def noisy_gemm(
     inner_hash_counter: torch.Tensor | None = None,
     enable_debug: bool = False,
     sm120_generation: int = 0,
+    sm120_adjusted_target: int | None = None,
 ):
     """Perform noising, matmul, and denoising.
 
@@ -488,6 +489,8 @@ def noisy_gemm(
         sm120_generation: Monotonic mining-job generation captured with the job header.
             Used by the SM120 winner descriptor and alpha telemetry; the established
             host-side stale-job guard remains authoritative for submission.
+        sm120_adjusted_target: Host integer form of pow_target, supplied by the live
+            vLLM caller so telemetry does not need a GPU-to-CPU synchronization.
     """
     sm120_winner = None
     global _sm120_warmup_remaining, _sm120_active_announced
@@ -511,6 +514,7 @@ def noisy_gemm(
         raise RuntimeError(f"PEARL_SM120_BACKEND requested on unsupported CUDA capability {capability}")
 
     if sm120_requested and sm120_device:
+        os.environ.setdefault("PEARL_SM120_REUSE_ALLOC", "1")
         missing_flags = [
             name
             for name in ("PEARL_SM120_FUSED", "PEARL_SM120_SEARCH_ONLY")
@@ -562,13 +566,13 @@ def noisy_gemm(
             AxEBL_fp16.copy_((sm120_axebl.to(torch.float32) * (2**-14)).to(torch.float16))
             EARxBpEB_fp16.copy_((sm120_earxbpeb.to(torch.float32) * (2**-12)).to(torch.float16))
 
-            key_cpu = pow_key.detach().contiguous().view(torch.uint8).cpu()
-            target_cpu = pow_target.detach().contiguous().view(torch.uint8).cpu()
-            sm120_result = pearl_sm120_cuda.search(
+            key_device = pow_key.detach().contiguous().view(torch.uint8)
+            target_device = pow_target.detach().contiguous().view(torch.uint8)
+            sm120_result = pearl_sm120_cuda.search_device(
                 ApEA.unsqueeze(0),
                 BpEB,
-                key_cpu,
-                target_cpu,
+                key_device,
+                target_device,
                 A.shape[0],
                 B.shape[0],
                 A.shape[1],
@@ -585,7 +589,10 @@ def noisy_gemm(
                         f"gpu={descriptor['generation']} host={sm120_generation}"
                     )
 
-            target_int = int.from_bytes(bytes(target_cpu.tolist()), "little")
+            if sm120_adjusted_target is None:
+                target_int = int.from_bytes(bytes(target_device.cpu().tolist()), "little")
+            else:
+                target_int = int(sm120_adjusted_target)
             snapshot = _sm120_telemetry.record(
                 generation=int(sm120_generation),
                 m=int(A.shape[0]),
@@ -605,7 +612,11 @@ def noisy_gemm(
                 _sm120_active_announced = True
 
             if snapshot.should_log:
-                print(format_sm120_snapshot(snapshot), flush=True)
+                from .sm120_telemetry import format_sm120_rate
+
+                print(format_sm120_rate(snapshot), flush=True)
+                if os.environ.get("PEARL_SM120_VERBOSE_TELEMETRY") == "1":
+                    print(format_sm120_snapshot(snapshot), flush=True)
 
             if sm120_result["winner_descriptors"]:
                 sm120_winner = sm120_result["winner_descriptors"][0]
