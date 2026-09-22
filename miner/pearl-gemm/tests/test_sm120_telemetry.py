@@ -91,7 +91,7 @@ def test_krig_comparable_hashrate_uses_backend_valid_work() -> None:
     line = format_sm120_snapshot(second)
     assert f"hashrate_ths={(2 * work) / TH:.9f}" in line
     assert f"rolling_ths={work / TH:.9f}" in line
-    assert "tiles_s=16.000" in line
+    assert "tiles_s=32.000" in line
 
 
 def test_generation_resets_job_window_but_not_total() -> None:
