@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
@@ -8,11 +9,22 @@ namespace pearl::sm120 {
 bool runtime_enabled() {
   const char* value = std::getenv("PEARL_SM120_BACKEND");
   if (value == nullptr || value[0] != '1') return false;
+
+  // Device capability is invariant for the life of a worker process.  Querying
+  // cudaGetDeviceProperties in every noisy_gemm call showed up inside the
+  // synchronous search stage, so cache it per host thread/device.
+  thread_local int cached_device = -1;
+  thread_local bool cached_is_sm120 = false;
+
   int device = 0;
-  cudaDeviceProp properties{};
-  if (cudaGetDevice(&device) != cudaSuccess ||
-      cudaGetDeviceProperties(&properties, device) != cudaSuccess) return false;
-  return properties.major == 12 && properties.minor == 0;
+  if (cudaGetDevice(&device) != cudaSuccess) return false;
+  if (device != cached_device) {
+    cudaDeviceProp properties{};
+    if (cudaGetDeviceProperties(&properties, device) != cudaSuccess) return false;
+    cached_device = device;
+    cached_is_sm120 = properties.major == 12 && properties.minor == 0;
+  }
+  return cached_is_sm120;
 }
 
 namespace {
@@ -127,7 +139,6 @@ SearchResult search_job(const JobContext& job, const CandidateBatch& candidates,
     if (!reuse_alloc) scratch.release();
     return result;
   }
-  DeviceWinnerQueue host_queue{};
   if (!scratch.reserve(job.m, job.n, job.k)) {
     result.metrics.cuda_errors = 1;
     if (!reuse_alloc) scratch.release();
@@ -145,11 +156,19 @@ SearchResult search_job(const JobContext& job, const CandidateBatch& candidates,
     search_candidates.b_noised_t = scratch.cached_b();
   }
   const cudaStream_t stream = scratch.streams_enabled ? scratch.stream_compute : nullptr;
-  if (cudaMemsetAsync(scratch.winner_queue, 0, sizeof(DeviceWinnerQueue), stream) != cudaSuccess) {
+  // Losing searches dominate.  Only the two queue header words need clearing
+  // and returning on that path.  Winner descriptors remain untouched until a
+  // real hit, eliminating the old per-call 4+ KiB memset and D2H copy.
+  constexpr size_t kWinnerHeaderBytes = offsetof(DeviceWinnerQueue, winners);
+  static_assert(kWinnerHeaderBytes == sizeof(uint32_t) * 2);
+  uint32_t host_header[2] = {0, 0};
+
+  if (cudaMemsetAsync(scratch.winner_queue, 0, kWinnerHeaderBytes, stream) != cudaSuccess) {
     result.metrics.cuda_errors = 1;
     if (!reuse_alloc) scratch.release();
     return result;
   }
+
   DeviceSearchConfig config{};
   config.m = job.m; config.n = job.n; config.k = job.k; config.rank = job.rank;
   config.generation = job.generation;
@@ -157,18 +176,42 @@ SearchResult search_job(const JobContext& job, const CandidateBatch& candidates,
     config.jackpot_key[i] = job.jackpot_key.bytes[i];
     config.share_target[i] = job.share_target.little_endian[i];
   }
-  if (fused_search_launch(search_candidates, config, scratch.winner_queue, stream) != 0 ||
-      cudaStreamSynchronize(stream) != cudaSuccess ||
-      cudaMemcpy(&host_queue, scratch.winner_queue, sizeof(host_queue), cudaMemcpyDeviceToHost) != cudaSuccess) {
+
+  const int launch_status =
+      fused_search_launch(search_candidates, config, scratch.winner_queue, stream);
+  const cudaError_t header_copy_status =
+      launch_status == 0
+          ? cudaMemcpyAsync(host_header, scratch.winner_queue, kWinnerHeaderBytes,
+                            cudaMemcpyDeviceToHost, stream)
+          : cudaErrorUnknown;
+
+  if (launch_status != 0 || header_copy_status != cudaSuccess ||
+      cudaStreamSynchronize(stream) != cudaSuccess) {
     result.metrics.cuda_errors = 1;
   } else {
+    const uint32_t winner_count = host_header[0];
+    const uint32_t overflow_flag = host_header[1];
+
     result.metrics.candidates = candidates.count;
-    result.metrics.valid_candidate_work = uint64_t(candidates.count) * job.m * job.n * job.k;
-    result.metrics.winner_count = host_queue.winner_count;
-    result.winner_overflow = host_queue.overflow_flag != 0;
-    result.metrics.overflow_count = host_queue.overflow_flag ? 1 : 0;
-    const uint32_t copied = host_queue.winner_count < kWinnerQueueCapacity ? host_queue.winner_count : kWinnerQueueCapacity;
-    for (uint32_t i = 0; i < copied; ++i) result.winners[i] = host_queue.winners[i];
+    result.metrics.valid_candidate_work =
+        uint64_t(candidates.count) * job.m * job.n * job.k;
+    result.metrics.winner_count = winner_count;
+    result.winner_overflow = overflow_flag != 0;
+    result.metrics.overflow_count = overflow_flag ? 1 : 0;
+
+    const uint32_t copied =
+        winner_count < kWinnerQueueCapacity ? winner_count : kWinnerQueueCapacity;
+    if (copied != 0) {
+      const auto* device_winners =
+          reinterpret_cast<const uint8_t*>(scratch.winner_queue) +
+          offsetof(DeviceWinnerQueue, winners);
+      if (cudaMemcpyAsync(result.winners.data(), device_winners,
+                          size_t(copied) * sizeof(WinnerDescriptor),
+                          cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
+          cudaStreamSynchronize(stream) != cudaSuccess) {
+        result.metrics.cuda_errors = 1;
+      }
+    }
   }
   if (!reuse_alloc) scratch.release();
   return result;
