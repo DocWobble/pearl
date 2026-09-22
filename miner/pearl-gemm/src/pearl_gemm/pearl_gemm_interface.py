@@ -3,7 +3,27 @@ import os
 import pearl_gemm_cuda
 import torch
 
+
+# vLLM performs one or more large synthetic forwards while bringing its HTTP
+# server up.  Those forwards validate model execution but are not mining work;
+# running a full proof scan there prevents readiness.  The launcher consumes
+# this bounded allowance, after which every eligible production forward enters
+# the SM120 search path.
+_sm120_warmup_remaining = int(os.environ.get("PEARL_SM120_WARMUP_SKIP", "0"))
+_sm120_search_calls = 0
+
 BLAKE3_DIGEST_SIZE_U32 = 8
+
+
+def _canonical_scaled_gemm(A, B, A_scales, B_scales, dtype):
+    """Architecture-neutral quantized GEMM used where Hopper code is absent."""
+    # torch._int_mm rejects one-row projections, which are ordinary inference
+    # operations and cannot satisfy Pearl's proof geometry anyway.
+    if A.shape[0] <= 16:
+        product = torch.matmul(A.to(torch.float32), B.to(torch.float32).t())
+    else:
+        product = torch._int_mm(A, B.t().contiguous()).to(torch.float32)
+    return (product * A_scales[:, None] * B_scales[None, :]).to(dtype)
 
 
 def make_pow_target_tensor(value: int, device="cuda") -> torch.Tensor:
@@ -287,6 +307,18 @@ def gemm(
             tiles of B out of L2 cache.             If None, attempt to set swizzle size to maximize
             L2 hit rate, based on a heuristic.
     """
+    # The legacy vanilla GEMM dispatch contains only Hopper kernels.  Small
+    # LLM projections never enter noisy_gemm, so SM120 needs this canonical
+    # integer fallback as well as the noisy path.
+    if (
+        os.environ.get("PEARL_SM120_BACKEND") == "1"
+        and A.is_cuda
+        and A.device == B.device
+        and torch.cuda.get_device_capability(A.device) == (12, 0)
+    ):
+        C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
+        return
+
     pearl_gemm_cuda.gemm(
         A,
         B,
@@ -449,6 +481,7 @@ def noisy_gemm(
         enable_debug: If True, enables debug mode for inner hash counting validation.
     """
     sm120_winner = None
+    global _sm120_warmup_remaining, _sm120_search_calls
     sm120_dispatch = (
         os.environ.get("PEARL_SM120_BACKEND") == "1"
         and os.environ.get("PEARL_SM120_FUSED") == "1"
@@ -458,8 +491,6 @@ def noisy_gemm(
         and torch.cuda.get_device_capability(A.device) == (12, 0)
         and A.shape[0] >= 16
         and B.shape[0] >= 16
-        and A.shape[0] % 16 == 0
-        and B.shape[0] % 16 == 0
         and A.shape[1] >= 16 * 128
         and A.shape[1] <= 65536
         and A.shape[1] % 128 == 0
@@ -469,29 +500,62 @@ def noisy_gemm(
     if sm120_dispatch:
         try:
             import pearl_sm120_cuda
+            from .sm120_reference import canonical_integer_noising
 
-            # Reuse Pearl's canonical noising kernels, then let SM120 own the
-            # exact transcript/winner decision over those same int8 buffers.
-            noise_A(A, EAL, AxEBL_fp16, ApEA, EAR_R_major, EBL_K_major,
-                    tile_size_m_noising_A, tile_size_k_noising_A,
-                    pipeline_stages_noising_A, k_blocks_per_split_noising_A)
-            noise_B(B, EBR, EARxBpEB_fp16, BpEB, EAR_K_major, EBL_R_major,
-                    tile_size_n_noising_B, tile_size_k_noising_B,
-                    pipeline_stages_noising_B, k_blocks_per_split_noising_B)
-            torch.cuda.current_stream(A.device).synchronize()
+            # Server profiling calls exercise every mining layer but carry no
+            # live job.  Preserve exact inference semantics and reserve the
+            # canonical proof construction for work after readiness.
+            if _sm120_warmup_remaining > 0:
+                _sm120_warmup_remaining -= 1
+                C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
+                return
+
+            # The Hopper TMA/WGMMA noising kernels are not an SM120 runtime
+            # dependency.  Materialize Pearl's canonical integer definition
+            # first; the small SM120 kernels can later replace this oracle
+            # after byte-for-byte parity is established.
+            sm120_apea, sm120_bpeb, sm120_axebl, sm120_earxbpeb = canonical_integer_noising(
+                A, B, EAL, EBR, EAR_R_major, EBL_R_major
+            )
+            ApEA.copy_(sm120_apea)
+            BpEB.copy_(sm120_bpeb)
+            AxEBL_fp16.copy_((sm120_axebl.to(torch.float32) * (2**-14)).to(torch.float16))
+            EARxBpEB_fp16.copy_((sm120_earxbpeb.to(torch.float32) * (2**-12)).to(torch.float16))
             key_cpu = pow_key.detach().contiguous().view(torch.uint8).cpu()
             target_cpu = pow_target.detach().contiguous().view(torch.uint8).cpu()
-            sm120_result = pearl_sm120_cuda.search(
-                ApEA.unsqueeze(0), BpEB, key_cpu, target_cpu,
-                A.shape[0], B.shape[0], A.shape[1], 0
-            )
-            if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
-                raise RuntimeError(f"SM120 search failed: {sm120_result}")
-            if sm120_result["winner_descriptors"]:
-                sm120_winner = sm120_result["winner_descriptors"][0]
-            run_noising_A = False
-            run_noising_B = False
-            skip_reduction = True
+            # The dense reference is valid for every matrix extent.  The
+            # current SM120 tile search is deliberately restricted to its
+            # exact 16x16 proof geometry; an irregular inference batch must
+            # never fall through into Hopper TMA/WGMMA code.
+            if A.shape[0] % 16 == 0 and B.shape[0] % 16 == 0:
+                sm120_result = pearl_sm120_cuda.search(
+                    ApEA.unsqueeze(0), BpEB, key_cpu, target_cpu,
+                    A.shape[0], B.shape[0], A.shape[1], 0
+                )
+                if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
+                    raise RuntimeError(f"SM120 search failed: {sm120_result}")
+                _sm120_search_calls += 1
+                if _sm120_search_calls % 64 == 0 or sm120_result["winner_descriptors"]:
+                    print(
+                        "SM120_SEARCH "
+                        f"call={_sm120_search_calls} m={A.shape[0]} n={B.shape[0]} k={A.shape[1]} "
+                        f"candidates={sm120_result['candidates']} "
+                        f"winners={sm120_result['winners']}",
+                        flush=True,
+                    )
+                if sm120_result["winner_descriptors"]:
+                    sm120_winner = sm120_result["winner_descriptors"][0]
+            # The canonical inference value is A @ B.T with per-row scales.
+            # Returning it here deliberately prevents a later call into the
+            # legacy SM90 TMA/WGMMA main kernel.
+            C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
+            if sm120_winner is not None:
+                pearl_sm120_cuda.signal_header(
+                    host_signal_header_pinned,
+                    A.shape[0], B.shape[0], A.shape[1],
+                    sm120_winner["tile_row"], sm120_winner["tile_col"],
+                )
+            return
         except ImportError:
             sm120_dispatch = False
 

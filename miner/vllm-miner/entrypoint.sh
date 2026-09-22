@@ -15,6 +15,18 @@ echo "Starting pearl-gateway..."
 pearl-gateway start &
 PEARL_PID=$!
 
+cleanup() {
+    # vLLM is the foreground process, so this trap owns the gateway lifecycle
+    # as well.  Waiting prevents a subsequent launch from racing its Unix
+    # socket or inherited RPC state.
+    if kill -0 "$PEARL_PID" 2>/dev/null; then
+        kill -TERM "$PEARL_PID" 2>/dev/null || true
+        wait "$PEARL_PID" 2>/dev/null || true
+    fi
+    rm -f "$GATEWAY_SOCKET"
+}
+trap cleanup EXIT INT TERM
+
 # Wait until the gateway's miner RPC socket is ready (the gateway exposes a Unix
 # socket, not an HTTP endpoint), failing fast if the gateway dies during startup.
 GATEWAY_SOCKET="${MINER_RPC_SOCKET_PATH:-/tmp/pearlgw.sock}"
@@ -35,4 +47,4 @@ if [ ! -S "$GATEWAY_SOCKET" ]; then
 fi
 
 echo "Starting vllm serve with args: $@"
-exec vllm serve "$@"
+vllm serve "$@"

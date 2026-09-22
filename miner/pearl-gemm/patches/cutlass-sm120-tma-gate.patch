@@ -1,0 +1,13 @@
+diff --git a/include/cute/arch/config.hpp b/include/cute/arch/config.hpp
+--- a/include/cute/arch/config.hpp
++++ b/include/cute/arch/config.hpp
+@@ -152,6 +152,10 @@
+ #if (defined(CUTLASS_ARCH_MMA_SM120_ENABLED) || defined(CUTLASS_ARCH_MMA_SM120A_ENABLED) ||\
+      defined(CUTLASS_ARCH_MMA_SM121_ENABLED) || defined(CUTLASS_ARCH_MMA_SM121A_ENABLED))
++  // SM120 implements TMA, and the legacy SM90 TMA wrappers use this gate for
++  // their outer path.  Keep it architecture-scoped so host compilation still
++  // takes its normal fallback branch.
++#  define CUTE_ARCH_TMA_SM90_ENABLED
+ #  define CUTE_ARCH_MMA_SM120_ENABLED
+ #  define CUTE_ARCH_TMA_SM120_ENABLED
+ #endif

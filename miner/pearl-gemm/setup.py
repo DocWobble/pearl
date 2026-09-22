@@ -365,7 +365,13 @@ if not SKIP_CUDA_BUILD:
     warn_if_cuda_home_missing("pearl_gemm")
     _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
     print(f"cuda version = {bare_metal_version}\n\n")
-    arch_flags = ["-gencode", COMPUTE_CAPABILITY]
+    # The main extension also owns the canonical tensor-hash/Merkle proof
+    # implementation.  On RTX 50-series it must contain an SM120 image even
+    # when the opt-in SM120 GEMM backend is enabled separately.
+    arch_flags = [
+        "-gencode",
+        SM120_COMPUTE_CAPABILITY if SM120_BACKEND else COMPUTE_CAPABILITY,
+    ]
 
     if not SKIP_CPP_GENERATION:
         # Generate template instantiations for all possible kernels
@@ -446,6 +452,9 @@ if not SKIP_CUDA_BUILD:
         )
         if cuda_cccl_include_dir.exists():
             include_dirs.append(cuda_cccl_include_dir)
+        cuda_cccl_include_dir = Path(CUDA_HOME) / "include" / "cccl"
+        if cuda_cccl_include_dir.exists():
+            include_dirs.append(cuda_cccl_include_dir)
 
     # Get PyTorch library path for rpath
     torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
@@ -473,6 +482,12 @@ if not SKIP_CUDA_BUILD:
         cuda_target_include = Path(CUDA_HOME) / "targets" / f"{platform.machine()}-linux" / "include"
         if cuda_target_include.exists():
             sm120_include_dirs.append(cuda_target_include)
+        # CUDA 13 ships libcudacxx/CCCL below ``include/cccl`` rather than
+        # directly below ``include``.  NVCC finds it implicitly, but the C++
+        # compiler that builds the pybind translation unit does not.
+        cuda_cccl_include = Path(CUDA_HOME) / "include" / "cccl"
+        if cuda_cccl_include.exists():
+            sm120_include_dirs.append(cuda_cccl_include)
         ext_modules.append(
             CUDAExtension(
                 name="pearl_sm120_cuda",
