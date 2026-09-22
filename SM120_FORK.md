@@ -77,8 +77,8 @@ moves the hot search path closer to a real standalone miner.
   to the CPU before every search.
 - Losing searches clear and copy only the compact queue/analytics header.
   Winner descriptors are copied only when a winner actually exists.
-- `miner/tools/benchmark_sm120_request_batch.py` compares request batch sizes
-  in one process using measured rolling TH/s. This is preferable to multiple
+- `miner/tools/benchmark_sm120_request_batch.py` sweeps prompt/prefill size and
+  request batch size in one process using measured rolling TH/s. This is preferable to multiple
   competing workload processes, which were observed to divide the same GPU
   throughput rather than increase it.
 
