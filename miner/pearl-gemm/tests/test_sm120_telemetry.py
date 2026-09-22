@@ -59,6 +59,7 @@ def test_target_tests_and_krig_equivalent_hashrate() -> None:
     assert second.total_hashrate_hs == expected_total_work
     assert second.job_hashrate_hs == expected_total_work
     assert second.job_mean_target_hit_seconds == 1.0 / 16.0
+    assert second.total_expected_opens_per_second == 16.0
 
     rate = format_sm120_rate(second)
     assert "hashrate_ths=" in rate
