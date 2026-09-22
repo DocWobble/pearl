@@ -63,7 +63,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--iterations", type=int, default=5)
-    parser.add_argument("--modes", default="scalar,dp4a,wmma")
+    parser.add_argument("--modes", default="scalar,dp4a,wmma,wmma64x64,wmma64x128,wmma128x64")
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -84,7 +84,7 @@ def main() -> None:
     target = torch.zeros(32, dtype=torch.uint8)
 
     modes = tuple(mode.strip() for mode in args.modes.split(",") if mode.strip())
-    allowed = {"scalar", "dp4a", "wmma"}
+    allowed = {"scalar", "dp4a", "wmma", "wmma64x64", "wmma64x128", "wmma128x64"}
     if not modes or any(mode not in allowed for mode in modes):
         raise SystemExit(f"invalid --modes: {args.modes}")
 
