@@ -1,6 +1,7 @@
 """Fused Hadamard + smooth-scale + 7-bit symmetric quantization kernel (CuTe DSL)."""
 
 import math
+import os
 from typing import Final
 
 import cuda.bindings.driver as cuda_drv
@@ -525,6 +526,76 @@ def _fwht_reg_mut(x_buf, num_elems, vecsize: cutlass.Constexpr[int], k: cutlass.
 DEFAULT_HADAMARD_BLOCK_SIZE: Final[int] = 16
 
 _cache = {}
+_reference_hadamard_cache: dict[tuple[int, int], torch.Tensor] = {}
+
+
+def _reference_hadamard_block(k: int, device: torch.device) -> torch.Tensor:
+    """Canonical Pearl Hadamard block used by the repository reference tests."""
+    if k < 1 or (k & (k - 1)) != 0:
+        raise ValueError(f"block_size must be a power of 2, got {k}")
+    device_index = device.index if device.index is not None else torch.cuda.current_device()
+    key = (k, device_index)
+    cached = _reference_hadamard_cache.get(key)
+    if cached is not None:
+        return cached
+
+    h = torch.ones((1, 1), dtype=torch.float32, device=device)
+    while h.shape[0] < k:
+        h = torch.cat(
+            [torch.cat([h, h], dim=1), torch.cat([h, -h], dim=1)],
+            dim=0,
+        )
+    h[:, 0] *= -1
+    h /= math.sqrt(k)
+    _reference_hadamard_cache[key] = h
+    return h
+
+
+def _quantize_reference(
+    x: torch.Tensor,
+    xq: torch.Tensor,
+    xq_scales: torch.Tensor,
+    smooth_scale: torch.Tensor | None,
+    max_val: int,
+    block_size: int,
+) -> None:
+    """Architecture-neutral implementation of Pearl's canonical quantization math.
+
+    This intentionally mirrors the pure-PyTorch reference already used by
+    test_hadamard_quantization.py: optional normalized block Hadamard, optional
+    smooth scaling, per-row absmax scale, round-to-nearest-even, and symmetric
+    clamp.  It is a correctness fallback for SM120 where the current CuTe
+    transport still attempts an SM90-only TMA descriptor-prefetch path.
+    """
+    m, n = x.shape
+    work = x.to(torch.float32)
+
+    if block_size > 0:
+        if block_size < 2 or (block_size & (block_size - 1)) != 0:
+            raise ValueError(f"block_size must be a power of 2 ≥ 2, got {block_size}")
+        if n % block_size != 0:
+            raise ValueError(f"N (={n}) must be divisible by block_size (={block_size})")
+        h = _reference_hadamard_block(block_size, x.device)
+        work = work.view(m, n // block_size, block_size).matmul(h).view(m, n)
+
+    if smooth_scale is not None:
+        smooth = smooth_scale
+        if smooth.ndim == 1:
+            smooth = smooth.unsqueeze(0)
+        work = work * smooth.to(device=x.device, dtype=torch.float32)
+
+    row_max = work.abs().amax(dim=-1, keepdim=True)
+    scales = row_max / float(max_val)
+    # Match the CuTe kernel's max_val / (max_abs + 1e-30) formulation so zero
+    # rows produce scale=0 and quantized zeros without a branch.
+    inv_scale = float(max_val) / (row_max + 1e-30)
+    quantized = (
+        torch.round(work * inv_scale)
+        .clamp(-float(max_val), float(max_val))
+        .to(torch.int8)
+    )
+    xq.copy_(quantized)
+    xq_scales.copy_(scales)
 
 
 def quantize(
@@ -549,6 +620,26 @@ def quantize(
     """
     M, N = x.shape
     device = x.device
+
+    # The current CuTe quantizer contains an SM90 TMA-descriptor-prefetch path.
+    # On Blackwell SM120 that path fails during vLLM's post-load profiling
+    # forward. Use Pearl's own canonical reference math until an SM120-native
+    # quantization kernel replaces the transport. This changes implementation,
+    # not quantization semantics.
+    if (
+        x.is_cuda
+        and torch.cuda.get_device_capability(device) == (12, 0)
+        and os.environ.get("PEARL_SM120_QUANT_CUTE", "0") != "1"
+    ):
+        _quantize_reference(
+            x,
+            xq,
+            xq_scales,
+            smooth_scale=smooth_scale,
+            max_val=max_val,
+            block_size=block_size,
+        )
+        return
 
     has_smooth = smooth_scale is not None
     has_hadamard = block_size > 0
