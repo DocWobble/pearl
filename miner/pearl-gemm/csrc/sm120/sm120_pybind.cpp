@@ -102,7 +102,13 @@ py::dict sm120_search(
   for (uint32_t i = 0; i < 32; ++i) { job.jackpot_key.bytes[i] = key[i]; job.share_target.little_endian[i] = target[i]; }
   pearl::sm120::CandidateBatch candidates{candidate_a.data_ptr<int8_t>(), b_transposed.data_ptr<int8_t>(), uint32_t(batch),
                                           reinterpret_cast<uint64_t>(b_transposed.data_ptr<int8_t>())};
-  const auto result = pearl::sm120::search_job(job, candidates);
+
+  // The live Python seam is synchronous and retains the GIL, so one scratch
+  // object can safely persist across calls in this worker process.  Without
+  // this, PEARL_SM120_REUSE_ALLOC had no effect because the overload below
+  // constructed and destroyed DeviceScratch on every noisy_gemm invocation.
+  static pearl::sm120::DeviceScratch scratch;
+  const auto result = pearl::sm120::search_job(job, candidates, scratch);
   return result_dict(result);
 }
 
