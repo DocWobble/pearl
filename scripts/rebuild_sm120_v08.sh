@@ -15,7 +15,7 @@ fi
 cd "$ROOT"
 
 echo "Syncing Pearl's uv workspace"
-uv sync --package pearl-gemm --package pearl-gemm-build-utils
+uv sync --package pearl-gemm
 
 VENV_PYTHON="$ROOT/.venv/bin/python"
 if [[ ! -x "$VENV_PYTHON" ]]; then
