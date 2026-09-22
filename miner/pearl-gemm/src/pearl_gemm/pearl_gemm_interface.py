@@ -515,6 +515,7 @@ def noisy_gemm(
 
     if sm120_requested and sm120_device:
         os.environ.setdefault("PEARL_SM120_REUSE_ALLOC", "1")
+        os.environ.setdefault("PEARL_SM120_WMMA", "1")
         missing_flags = [
             name
             for name in ("PEARL_SM120_FUSED", "PEARL_SM120_SEARCH_ONLY")
