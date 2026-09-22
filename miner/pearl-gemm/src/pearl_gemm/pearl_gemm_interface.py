@@ -1,4 +1,5 @@
 import os
+import time
 
 import pearl_gemm_cuda
 import torch
@@ -16,6 +17,7 @@ _sm120_telemetry = Sm120SearchTelemetry(
     log_every=max(1, int(os.environ.get("PEARL_SM120_LOG_EVERY", "64")))
 )
 _sm120_active_announced = False
+_sm120_profile_calls = 0
 
 BLAKE3_DIGEST_SIZE_U32 = 8
 
@@ -490,7 +492,7 @@ def noisy_gemm(
             host-side stale-job guard remains authoritative for submission.
     """
     sm120_winner = None
-    global _sm120_warmup_remaining, _sm120_active_announced
+    global _sm120_warmup_remaining, _sm120_active_announced, _sm120_profile_calls
 
     sm120_requested = os.environ.get("PEARL_SM120_BACKEND") == "1"
     same_cuda_device = A.is_cuda and B.is_cuda and A.device == B.device
@@ -550,6 +552,15 @@ def noisy_gemm(
                 C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
                 return
 
+            _sm120_profile_calls += 1
+            profile_enabled = os.environ.get("PEARL_SM120_PROFILE") == "1"
+            profile_every = max(1, int(os.environ.get("PEARL_SM120_PROFILE_EVERY", "8")))
+            profile_this = profile_enabled and (_sm120_profile_calls % profile_every == 0)
+            if profile_this:
+                torch.cuda.synchronize(A.device)
+                profile_total_start = time.perf_counter_ns()
+                profile_stage_start = profile_total_start
+
             # The Hopper TMA/WGMMA noising kernels are not an SM120 runtime
             # dependency. Materialize Pearl's canonical integer definition
             # first; the dedicated SM120 noising kernel can replace this oracle
@@ -561,9 +572,17 @@ def noisy_gemm(
             BpEB.copy_(sm120_bpeb)
             AxEBL_fp16.copy_((sm120_axebl.to(torch.float32) * (2**-14)).to(torch.float16))
             EARxBpEB_fp16.copy_((sm120_earxbpeb.to(torch.float32) * (2**-12)).to(torch.float16))
+            if profile_this:
+                torch.cuda.synchronize(A.device)
+                profile_noising_ms = (time.perf_counter_ns() - profile_stage_start) / 1e6
+                profile_stage_start = time.perf_counter_ns()
 
             key_cpu = pow_key.detach().contiguous().view(torch.uint8).cpu()
             target_cpu = pow_target.detach().contiguous().view(torch.uint8).cpu()
+            if profile_this:
+                profile_seed_copy_ms = (time.perf_counter_ns() - profile_stage_start) / 1e6
+                profile_stage_start = time.perf_counter_ns()
+
             sm120_result = pearl_sm120_cuda.search(
                 ApEA.unsqueeze(0),
                 BpEB,
@@ -574,6 +593,9 @@ def noisy_gemm(
                 A.shape[1],
                 int(sm120_generation),
             )
+            if profile_this:
+                torch.cuda.synchronize(A.device)
+                profile_search_ms = (time.perf_counter_ns() - profile_stage_start) / 1e6
 
             if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
                 raise RuntimeError(f"SM120 search failed: {sm120_result}")
@@ -613,7 +635,24 @@ def noisy_gemm(
             # The canonical inference value is A @ B.T with per-row scales.
             # Returning here deliberately prevents a later call into the legacy
             # SM90 TMA/WGMMA main kernel.
+            if profile_this:
+                profile_stage_start = time.perf_counter_ns()
             C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
+            if profile_this:
+                torch.cuda.synchronize(A.device)
+                profile_inference_ms = (time.perf_counter_ns() - profile_stage_start) / 1e6
+                profile_total_ms = (time.perf_counter_ns() - profile_total_start) / 1e6
+                print(
+                    "SM120_STAGE "
+                    f"call={_sm120_profile_calls} "
+                    f"m={A.shape[0]} n={B.shape[0]} k={A.shape[1]} "
+                    f"noising_ms={profile_noising_ms:.3f} "
+                    f"seed_copy_ms={profile_seed_copy_ms:.3f} "
+                    f"search_ms={profile_search_ms:.3f} "
+                    f"inference_ms={profile_inference_ms:.3f} "
+                    f"total_ms={profile_total_ms:.3f}",
+                    flush=True,
+                )
             if sm120_winner is not None:
                 pearl_sm120_cuda.signal_header(
                     host_signal_header_pinned,
