@@ -55,6 +55,18 @@ int main() {
   assert(cudaMemcpy(host_digest, d_digest, sizeof(host_digest), cudaMemcpyDeviceToHost) == cudaSuccess);
   const uint8_t expected_digest[32] = {0xc7,0x8c,0x38,0x1a,0x60,0x92,0xf1,0x7d,0x12,0xa0,0x1f,0xf0,0x32,0xe5,0x2e,0x83,0xcf,0x0f,0x93,0x45,0x67,0xda,0x16,0xe8,0xcb,0x3b,0x76,0xd1,0x05,0x80,0x67,0x6a};
   for (uint32_t i = 0; i < 32; ++i) assert(host_digest[i] == expected_digest[i]);
+
+  // Hash the independently accumulated scalar transcript.  The fused search
+  // below uses DP4A, so comparing its winner hash against this digest proves
+  // that vectorization did not move any rank checkpoint or change arithmetic.
+  std::array<uint8_t, 32> expected_search_digest{};
+  assert(cudaMemcpy(d_words, expected_transcript.data(), sizeof(expected_transcript),
+                    cudaMemcpyHostToDevice) == cudaSuccess);
+  blake3_probe<<<1, 1>>>(d_words, d_key, d_digest);
+  assert(cudaGetLastError() == cudaSuccess);
+  assert(cudaMemcpy(expected_search_digest.data(), d_digest,
+                    expected_search_digest.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
+
   cudaFree(d_digest); cudaFree(d_key); cudaFree(d_words);
   setenv("PEARL_SM120_BACKEND", "1", 1);
   setenv("PEARL_SM120_FUSED", "1", 1);
@@ -67,6 +79,8 @@ int main() {
   const auto search = pearl::sm120::search_job(job, batch, scratch);
   assert(search.metrics.cuda_errors == 0 && search.metrics.candidates == 1 && search.metrics.winner_count == 1);
   assert(search.winners[0].id.generation == 17 && search.winners[0].id.candidate_index == 0);
+  for (uint32_t i = 0; i < 32; ++i)
+    assert(search.winners[0].jackpot_hash.bytes[i] == expected_search_digest[i]);
   const auto* queue_first = scratch.winner_queue;
   const auto repeated = pearl::sm120::search_job(job, batch, scratch);
   assert(repeated.metrics.cuda_errors == 0 && repeated.metrics.winner_count == 1);
