@@ -1,4 +1,5 @@
 #include <ATen/ATen.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <memory>
 #include <pybind11/pybind11.h>
@@ -186,9 +187,11 @@ py::dict sm120_search_device(
 
   auto candidates = candidate_batch(candidate_a, b_transposed, m, n, k);
   auto& scratch = persistent_scratch(candidate_a);
+  const cudaStream_t stream =
+      at::cuda::getCurrentCUDAStream(candidate_a.get_device()).stream();
   return result_dict(pearl::sm120::search_job_device_params(
       job, candidates, scratch, jackpot_key_cuda.data_ptr<uint8_t>(),
-      share_target_cuda.data_ptr<uint8_t>()));
+      share_target_cuda.data_ptr<uint8_t>(), stream));
 }
 
 py::dict sm120_noise_search(torch::Tensor candidate_a_base,
