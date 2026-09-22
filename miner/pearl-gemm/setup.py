@@ -365,12 +365,13 @@ if not SKIP_CUDA_BUILD:
     warn_if_cuda_home_missing("pearl_gemm")
     _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
     print(f"cuda version = {bare_metal_version}\n\n")
-    # The main extension also owns the canonical tensor-hash/Merkle proof
-    # implementation.  On RTX 50-series it must contain an SM120 image even
-    # when the opt-in SM120 GEMM backend is enabled separately.
+    # Preserve the historical Pearl extension exactly on its original
+    # Hopper build target. The uploaded working implementation deliberately
+    # kept pearl_sm120_cuda as a separate extension and never retargeted the
+    # known-working pearl_gemm_cuda build when SM120_BACKEND was enabled.
     arch_flags = [
         "-gencode",
-        SM120_COMPUTE_CAPABILITY if SM120_BACKEND else COMPUTE_CAPABILITY,
+        COMPUTE_CAPABILITY,
     ]
 
     if not SKIP_CPP_GENERATION:
