@@ -27,7 +27,7 @@ fn fixture() -> (IncompleteBlockHeader, MiningConfiguration) {
     let header = IncompleteBlockHeader {
         version: 0,
         prev_block: [0x31; 32],
-        merkle_root: *b"sm120-fixed-b-mutable-a-v3-gate!!",
+        merkle_root: *b"sm120-fixed-b-mutable-a-v3-gate!",
         timestamp: 0x6a6a_6a6a,
         // Deliberately easy local release-gate target. Validity is still checked
         // by the real V3 parser, commitment/noise derivation and jackpot path.
