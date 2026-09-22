@@ -141,3 +141,24 @@ so summing accepted expected hash work and dividing by elapsed seconds gives a
 pool-inferred H/s in the same dimensional unit as Krig's local hashrate.
 `compare_pool_work.py` reports this as pool-inferred TH/s when those fields
 are present. This is intentionally independent of the local CUDA counter.
+
+
+### Tensor-core search
+
+v08 now prefers an exact signed-INT8 WMMA `m16n16k16` search kernel with
+INT32 accumulation. One warp owns one complete 16x16 Pearl proof tile. Eight
+K=16 WMMA operations advance each rank-128 checkpoint; the accumulator remains
+live across checkpoints, is stored through `wmma::store_matrix_sync`, XOR
+folded exactly, and fed into the unchanged 16-word transcript and keyed BLAKE3
+path.
+
+`PEARL_SM120_WMMA=1` is the default. Setting
+`PEARL_SM120_WMMA=0` selects the exact DP4A fallback. The extension smoke
+test executes both kernels on identical operands and requires their 32-byte
+jackpot hashes to match exactly. The dense CUDA parity test independently
+constructs the scalar cumulative transcript and also requires the fused winner
+hash to match it.
+
+The WMMA path is the primary throughput experiment for the 5070 Ti. It must
+compile and pass those parity checks on the physical SM120 card before its
+reported TH/s is treated as valid.
