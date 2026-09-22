@@ -94,8 +94,8 @@ def main() -> None:
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000")
     parser.add_argument("--model")
     parser.add_argument("--batch-sizes", default="1,2,4,8")
+    parser.add_argument("--prompt-words", default="512,1024,2048")
     parser.add_argument("--seconds", type=float, default=45.0)
-    parser.add_argument("--prompt-words", type=int, default=1024)
     parser.add_argument("--miner-log", type=Path, default=Path(".sm120-miner.log"))
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
@@ -104,39 +104,53 @@ def main() -> None:
     stream_id = int.from_bytes(os.urandom(8), "little")
     sequence = 0
     offset = args.miner_log.stat().st_size if args.miner_log.exists() else 0
-    scores: list[tuple[float, int]] = []
+    scores: list[tuple[float, int, int]] = []
+    batches = [int(x) for x in args.batch_sizes.split(",") if x.strip()]
+    prompt_sizes = [int(x) for x in args.prompt_words.split(",") if x.strip()]
 
-    for batch in [int(x) for x in args.batch_sizes.split(",") if x.strip()]:
-        started = time.monotonic()
-        sequence, requests = run_window(
-            args.endpoint,
-            model,
-            batch,
-            args.seconds,
-            stream_id,
-            sequence,
-            args.prompt_words,
-            args.timeout,
-        )
-        time.sleep(1.0)
-        offset, rates = new_rates(args.miner_log, offset)
-        if not rates:
-            print(f"batch={batch}: no SM120_RATE samples", flush=True)
-            continue
-        median = statistics.median(rates)
-        scores.append((median, batch))
-        print(
-            f"batch={batch} requests={requests} "
-            f"elapsed={time.monotonic()-started:.1f}s "
-            f"median_rolling_ths={median:.6f}",
-            flush=True,
-        )
+    for words in prompt_sizes:
+        for batch in batches:
+            started = time.monotonic()
+            try:
+                sequence, requests = run_window(
+                    args.endpoint,
+                    model,
+                    batch,
+                    args.seconds,
+                    stream_id,
+                    sequence,
+                    words,
+                    args.timeout,
+                )
+            except Exception as exc:
+                print(
+                    f"words={words} batch={batch}: failed: {exc}",
+                    flush=True,
+                )
+                continue
+            time.sleep(1.0)
+            offset, rates = new_rates(args.miner_log, offset)
+            if not rates:
+                print(
+                    f"words={words} batch={batch}: no SM120_RATE samples",
+                    flush=True,
+                )
+                continue
+            median = statistics.median(rates)
+            scores.append((median, words, batch))
+            print(
+                f"words={words} batch={batch} requests={requests} "
+                f"elapsed={time.monotonic()-started:.1f}s "
+                f"median_rolling_ths={median:.6f}",
+                flush=True,
+            )
 
     if not scores:
-        raise SystemExit("no measurable batch configuration")
-    best_rate, best_batch = max(scores)
+        raise SystemExit("no measurable request geometry")
+    best_rate, best_words, best_batch = max(scores)
     print(
-        f"best_batch={best_batch} median_rolling_ths={best_rate:.6f}",
+        f"best_prompt_words={best_words} best_batch={best_batch} "
+        f"median_rolling_ths={best_rate:.6f}",
         flush=True,
     )
 
