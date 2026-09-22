@@ -54,4 +54,35 @@ export PEARL_SM120_SEARCH_ONLY=1
 export PEARL_SM120_WMMA=1
 "$VENV_PYTHON" "$ROOT/miner/pearl-gemm/tests/sm120_extension_smoke.py"
 
-echo "SM120 v08 extension rebuild and smoke test passed."
+echo "Running SM120 Pearl quantization smoke test"
+"$VENV_PYTHON" - <<'PY'
+import torch
+from vllm_miner.quantization_operators import quant_7bit
+
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA required for SM120 quantization smoke test")
+if torch.cuda.get_device_capability() != (12, 0):
+    raise SystemExit(
+        f"Expected SM120, got compute capability {torch.cuda.get_device_capability()}"
+    )
+
+x = torch.randn((16, 4096), dtype=torch.bfloat16, device="cuda")
+smooth = torch.ones((1, 4096), dtype=torch.float32, device="cuda")
+
+for block_size in (0, 16):
+    xq, scale, _ = quant_7bit(
+        x,
+        smooth_scale=smooth,
+        block_size=block_size,
+    )
+    assert xq.dtype == torch.int8
+    assert scale.dtype == torch.float32
+    assert tuple(xq.shape) == tuple(x.shape)
+    assert tuple(scale.shape) == (x.shape[0], 1)
+    assert int(xq.abs().max().item()) <= 63
+    assert torch.isfinite(scale).all().item()
+
+print("SM120 Pearl quantization smoke test passed")
+PY
+
+echo "SM120 v08 rebuild and all smoke tests passed."
