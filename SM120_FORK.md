@@ -77,6 +77,13 @@ moves the hot search path closer to a real standalone miner.
   to the CPU before every search.
 - Losing searches clear and copy only the compact queue/analytics header.
   Winner descriptors are copied only when a winner actually exists.
+- The fused rank-128 inner loop uses exact signed INT8 `__dp4a` groups of four
+  instead of one scalar multiply per K element. Rank checkpoints stay at the
+  same 128-element boundaries.
+- The 256-word checkpoint XOR uses warp shuffles plus eight warp partials,
+  reducing the full-block synchronization tree to two barriers per checkpoint.
+  The CUDA parity test hashes an independently accumulated scalar transcript
+  and requires the fused DP4A result to match byte-for-byte.
 - `miner/tools/benchmark_sm120_request_batch.py` sweeps prompt/prefill size and
   request batch size in one process using measured rolling TH/s. This is preferable to multiple
   competing workload processes, which were observed to divide the same GPU
@@ -121,3 +128,16 @@ The fixed-B/mutable-A standalone candidate engine remains gated by Package 3
 of the v0.6 handoff. B caching is deliberately not enabled automatically in
 the current vLLM seam because its complete cache identity is not yet populated
 there. Proof-validity and real-job ownership tests come before that optimization.
+
+
+### Pool-inferred effective hashrate
+
+Accepted custom shares now log `adjusted_target`, `daf`, and
+`expected_hash_work`. For a share:
+
+`expected_hash_work = DAF * 2^256 / (adjusted_target + 1)`
+
+so summing accepted expected hash work and dividing by elapsed seconds gives a
+pool-inferred H/s in the same dimensional unit as Krig's local hashrate.
+`compare_pool_work.py` reports this as pool-inferred TH/s when those fields
+are present. This is intentionally independent of the local CUDA counter.
