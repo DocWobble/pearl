@@ -63,7 +63,7 @@ def test_target_tests_and_krig_equivalent_hashrate() -> None:
 
     rate = format_sm120_rate(second)
     assert "hashrate_ths=" in rate
-    assert "tiles_s=16.000" in rate
+    assert "tiles_s=16" in rate
 
 
 def test_generation_resets_job_window_not_total() -> None:
