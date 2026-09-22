@@ -72,6 +72,7 @@ def main() -> None:
     os.environ["PEARL_SM120_BACKEND"] = "1"
     os.environ["PEARL_SM120_FUSED"] = "1"
     os.environ["PEARL_SM120_SEARCH_ONLY"] = "1"
+    os.environ["PEARL_SM120_REUSE_ALLOC"] = "1"
 
     m, n, k = geometry_from_log(args.log)
     if m % 16 or n % 16 or k % 128:
