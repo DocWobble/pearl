@@ -49,7 +49,8 @@ SearchResult search_job(const JobContext& job, const CandidateBatch& candidates)
 SearchResult search_job_device_params(const JobContext& job, const CandidateBatch& candidates,
                                       DeviceScratch& scratch,
                                       const uint8_t* jackpot_key_device,
-                                      const uint8_t* share_target_device);
+                                      const uint8_t* share_target_device,
+                                      cudaStream_t stream = nullptr);
 
 SearchResult noise_and_search_job(const JobContext& job, const int8_t* a_base,
                                   const int8_t* b_base_t, const uint32_t* a_rows,
