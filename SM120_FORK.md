@@ -60,3 +60,64 @@ dedicated fixed-B/mutable-A candidate-bank loop remains the next optimization st
 To summarize a captured terminal log:
 
 `python miner/tools/summarize_sm120_alpha.py /path/to/.sm120-miner.log`
+
+
+## Throughput/search v08
+
+`sm120-throughput-search-v08` keeps the v07 proof/submission boundary and
+moves the hot search path closer to a real standalone miner.
+
+### Throughput changes
+
+- `DeviceScratch` is persistent per CUDA device and
+  `PEARL_SM120_REUSE_ALLOC=1` is enabled by default on the SM120 live path.
+  The winner queue is no longer allocated and freed for every search call.
+- The vLLM seam calls `pearl_sm120_cuda.search_device`, leaving the 32-byte
+  jackpot key and 32-byte target resident on CUDA instead of copying both back
+  to the CPU before every search.
+- Losing searches clear and copy only the compact queue/analytics header.
+  Winner descriptors are copied only when a winner actually exists.
+- `miner/tools/benchmark_sm120_request_batch.py` compares request batch sizes
+  in one process using measured rolling TH/s. This is preferable to multiple
+  competing workload processes, which were observed to divide the same GPU
+  throughput rather than increase it.
+
+### Apples-to-apples Pearl hashrate
+
+The captured Krig Prometheus baseline defines:
+
+`krig_miner_hashes_per_second = tiles_per_second * DAF`
+
+where for the captured K=2048 workload DAF is `16*16*2048 = 524288`.
+The SM120 backend's `valid_candidate_work` is exactly the corresponding
+quantity:
+
+`candidates * m * n * k`
+
+Therefore v08 reports:
+
+`Pearl H/s = sum(valid_candidate_work) / elapsed_seconds`
+
+and prints it as `hashrate_ths`, `rolling_ths`, and `job_ths` on
+`SM120_RATE` lines. `tiles_s` remains a separate diagnostic counting final
+16x16 jackpot target comparisons per second.
+
+Use:
+
+`python miner/tools/compare_sm120_krig_hashrate.py --krig-prom artifacts/baseline/krig/metrics_samples.prom --custom-log /path/to/.sm120-miner.log`
+
+for a direct median/mean/p90 TH/s comparison.
+
+### Search-distribution diagnostics
+
+The fused kernel also keeps nested counters for final hashes with at least
+8, 12, 16, 20, and 24 leading zero bits. The counters do not modify the real
+target and add an atomic operation only after the first 1/256 tail event.
+Telemetry reports observed/expected tail ratios. These counters are the gate
+for any future candidate-source steering: no source-order strategy is treated
+as advantageous unless it shows reproducible tail enrichment on unseen jobs.
+
+The fixed-B/mutable-A standalone candidate engine remains gated by Package 3
+of the v0.6 handoff. B caching is deliberately not enabled automatically in
+the current vLLM seam because its complete cache identity is not yet populated
+there. Proof-validity and real-job ownership tests come before that optimization.
