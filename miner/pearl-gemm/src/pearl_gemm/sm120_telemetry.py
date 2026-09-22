@@ -1,16 +1,23 @@
-"""Runtime accounting for the SM120 alpha search path.
+"""Runtime accounting for the known-working SM120 search path.
 
-The unit counted here is a completed Pearl jackpot target comparison.  One
-candidate matrix can contain many independent 16x16 proof tiles, so the
-candidate count alone is not a hashrate measurement.
+This module is intentionally Python-only.  It does not alter candidate
+construction, CUDA dispatch, quantization, hashing, proof generation, or the
+SM120 backend.  The Krig-comparable work unit is the exact integer MAC work
+already reported by the backend as valid_candidate_work:
+
+    candidates * m * n * k
+
+Krig reports the same dimensional quantity as tiles/s * 16 * 16 * K.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import time
 from typing import Any, Mapping
 
 TWO256 = 1 << 256
+TH = 1_000_000_000_000
 
 
 @dataclass(frozen=True)
@@ -31,7 +38,12 @@ class Sm120TelemetrySnapshot:
     job_mean_target_hit_seconds: float | None
     total_mean_target_hit_seconds: float | None
     valid_candidate_work: int
+    job_valid_candidate_work: int
     total_valid_candidate_work: int
+    job_hashes_per_second: float
+    total_hashes_per_second: float
+    rolling_hashes_per_second: float
+    expected_opens_per_second: float
     winners: int
     b_cache_hits: int
     b_cache_misses: int
@@ -40,10 +52,13 @@ class Sm120TelemetrySnapshot:
 
 
 class Sm120SearchTelemetry:
-    def __init__(self, log_every: int = 64) -> None:
+    def __init__(self, log_every: int = 64, rolling_seconds: float = 30.0) -> None:
         if log_every < 1:
             raise ValueError("log_every must be >= 1")
+        if rolling_seconds <= 0:
+            raise ValueError("rolling_seconds must be > 0")
         self.log_every = log_every
+        self.rolling_window_ns = int(rolling_seconds * 1e9)
         self._start_ns: int | None = None
         self._job_start_ns: int | None = None
         self._generation: int | None = None
@@ -53,18 +68,35 @@ class Sm120SearchTelemetry:
         self._total_expected_hits = 0.0
         self._job_expected_hits = 0.0
         self._total_valid_candidate_work = 0
+        self._job_valid_candidate_work = 0
+        self._rolling_work: deque[tuple[int, int]] = deque()
 
     @staticmethod
-    def _rate(count: int, start_ns: int | None, now_ns: int) -> float:
+    def _rate(count: int | float, start_ns: int | None, now_ns: int) -> float:
         if start_ns is None or now_ns <= start_ns:
             return 0.0
-        return count / ((now_ns - start_ns) / 1e9)
+        return float(count) / ((now_ns - start_ns) / 1e9)
 
     @staticmethod
-    def _mean_hit_seconds(expected_hits: float, start_ns: int | None, now_ns: int) -> float | None:
+    def _mean_hit_seconds(
+        expected_hits: float, start_ns: int | None, now_ns: int
+    ) -> float | None:
         if expected_hits <= 0.0 or start_ns is None or now_ns <= start_ns:
             return None
         return ((now_ns - start_ns) / 1e9) / expected_hits
+
+    def _rolling_rate(self, now_ns: int) -> float:
+        self._rolling_work.append((now_ns, self._total_valid_candidate_work))
+        cutoff = now_ns - self.rolling_window_ns
+        while len(self._rolling_work) > 2 and self._rolling_work[1][0] <= cutoff:
+            self._rolling_work.popleft()
+        if len(self._rolling_work) < 2:
+            return 0.0
+        start_ns, start_work = self._rolling_work[0]
+        end_ns, end_work = self._rolling_work[-1]
+        if end_ns <= start_ns:
+            return 0.0
+        return (end_work - start_work) / ((end_ns - start_ns) / 1e9)
 
     def record(
         self,
@@ -92,13 +124,18 @@ class Sm120SearchTelemetry:
             self._job_start_ns = now
             self._job_target_tests = 0
             self._job_expected_hits = 0.0
+            self._job_valid_candidate_work = 0
 
         candidates = int(result.get("candidates", 0))
         if candidates < 0:
             raise ValueError("candidate count cannot be negative")
+
         target_tests = candidates * (m // 16) * (n // 16)
         expected_hits = target_tests * ((target + 1) / TWO256)
         valid_candidate_work = int(result.get("valid_candidate_work", 0))
+        if valid_candidate_work < 0:
+            raise ValueError("valid_candidate_work cannot be negative")
+
         winners = int(result.get("winners", 0))
         b_cache_hits = int(result.get("b_cache_hits", 0))
         b_cache_misses = int(result.get("b_cache_misses", 0))
@@ -109,6 +146,12 @@ class Sm120SearchTelemetry:
         self._total_expected_hits += expected_hits
         self._job_expected_hits += expected_hits
         self._total_valid_candidate_work += valid_candidate_work
+        self._job_valid_candidate_work += valid_candidate_work
+
+        rolling_hps = self._rolling_rate(now)
+        total_hps = self._rate(self._total_valid_candidate_work, self._start_ns, now)
+        job_hps = self._rate(self._job_valid_candidate_work, self._job_start_ns, now)
+        expected_opens_s = self._rate(self._total_expected_hits, self._start_ns, now)
 
         should_log = (
             generation_changed
@@ -132,10 +175,19 @@ class Sm120SearchTelemetry:
             total_target_tests_per_second=self._rate(self._total_target_tests, self._start_ns, now),
             job_expected_hits=self._job_expected_hits,
             total_expected_hits=self._total_expected_hits,
-            job_mean_target_hit_seconds=self._mean_hit_seconds(self._job_expected_hits, self._job_start_ns, now),
-            total_mean_target_hit_seconds=self._mean_hit_seconds(self._total_expected_hits, self._start_ns, now),
+            job_mean_target_hit_seconds=self._mean_hit_seconds(
+                self._job_expected_hits, self._job_start_ns, now
+            ),
+            total_mean_target_hit_seconds=self._mean_hit_seconds(
+                self._total_expected_hits, self._start_ns, now
+            ),
             valid_candidate_work=valid_candidate_work,
+            job_valid_candidate_work=self._job_valid_candidate_work,
             total_valid_candidate_work=self._total_valid_candidate_work,
+            job_hashes_per_second=job_hps,
+            total_hashes_per_second=total_hps,
+            rolling_hashes_per_second=rolling_hps,
+            expected_opens_per_second=expected_opens_s,
             winners=winners,
             b_cache_hits=b_cache_hits,
             b_cache_misses=b_cache_misses,
@@ -149,7 +201,7 @@ def _fmt_seconds(value: float | None) -> str:
 
 
 def format_sm120_snapshot(snapshot: Sm120TelemetrySnapshot) -> str:
-    """Format one grep-friendly alpha telemetry line."""
+    """Format one grep-friendly telemetry line without changing runtime dispatch."""
     return (
         "SM120_ALPHA "
         f"generation={snapshot.generation} call={snapshot.call} "
@@ -158,12 +210,19 @@ def format_sm120_snapshot(snapshot: Sm120TelemetrySnapshot) -> str:
         f"job_tests={snapshot.job_target_tests} total_tests={snapshot.total_target_tests} "
         f"job_tests_s={snapshot.job_target_tests_per_second:.3f} "
         f"total_tests_s={snapshot.total_target_tests_per_second:.3f} "
+        f"tiles_s={snapshot.total_target_tests_per_second:.3f} "
         f"job_expected_hits={snapshot.job_expected_hits:.9e} "
         f"job_mean_hit_s={_fmt_seconds(snapshot.job_mean_target_hit_seconds)} "
         f"total_expected_hits={snapshot.total_expected_hits:.9e} "
         f"total_mean_hit_s={_fmt_seconds(snapshot.total_mean_target_hit_seconds)} "
+        f"expected_opens_s={snapshot.expected_opens_per_second:.9e} "
         f"valid_work={snapshot.valid_candidate_work} "
+        f"job_valid_work={snapshot.job_valid_candidate_work} "
         f"total_valid_work={snapshot.total_valid_candidate_work} "
+        f"job_hashrate_hs={snapshot.job_hashes_per_second:.3f} "
+        f"hashrate_hs={snapshot.total_hashes_per_second:.3f} "
+        f"hashrate_ths={snapshot.total_hashes_per_second / TH:.9f} "
+        f"rolling_ths={snapshot.rolling_hashes_per_second / TH:.9f} "
         f"b_cache_hit={snapshot.b_cache_hits} b_cache_miss={snapshot.b_cache_misses} "
         f"winners={snapshot.winners}"
     )
