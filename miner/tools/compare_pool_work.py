@@ -45,16 +45,28 @@ def summarize(path: Path) -> dict[str, Any]:
     submissions = [r for r in records if r.get("event") in {"share_submitted", "share_response"}]
     accepted = stale = rejected = 0
     normalized_accepted = normalized_stale = 0.0
+    expected_hash_work_accepted = expected_hash_work_stale = 0.0
     for record in submissions:
         result = str(record.get("result", record.get("status", ""))).upper()
-        target = _target(record.get("share_target", record.get("target")))
+        target = _target(
+            record.get(
+                "adjusted_target",
+                record.get("share_target", record.get("target")),
+            )
+        )
         work = (TWO256 / (target + 1)) if target is not None and target >= 0 else 0.0
+        hash_work = float(record.get("expected_hash_work", 0.0) or 0.0)
+        if not hash_work and work:
+            daf = float(record.get("daf", 0.0) or 0.0)
+            hash_work = work * daf
         if result == "ACCEPTED":
             accepted += 1
             normalized_accepted += work
+            expected_hash_work_accepted += hash_work
         elif result == "STALE":
             stale += 1
             normalized_stale += work
+            expected_hash_work_stale += hash_work
         elif result in {"REJECTED", "INVALID"}:
             rejected += 1
     times = [int(r["monotonic_ns"]) for r in records if r.get("monotonic_ns") is not None]
@@ -73,6 +85,15 @@ def summarize(path: Path) -> dict[str, Any]:
         "normalized_stale_work": normalized_stale,
         "normalized_accepted_work_per_hour": normalized_accepted / hours if hours else 0.0,
         "normalized_stale_work_per_hour": normalized_stale / hours if hours else 0.0,
+        "pool_inferred_hashes_per_second": (
+            expected_hash_work_accepted / duration if duration else 0.0
+        ),
+        "pool_inferred_ths": (
+            expected_hash_work_accepted / duration / 1e12 if duration else 0.0
+        ),
+        "pool_inferred_stale_ths": (
+            expected_hash_work_stale / duration / 1e12 if duration else 0.0
+        ),
         "average_gpu_watts": sum(watts) / len(watts) if watts else None,
     }
 
@@ -91,14 +112,17 @@ def main() -> None:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    print("| miner | accepted work/hour | stale work/hour | accepted | stale | rejected | avg watts |")
-    print("|---|---:|---:|---:|---:|---:|---:|")
+    print("| miner | pool-inferred TH/s | accepted work/hour | stale work/hour | accepted | stale | rejected | avg watts |")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|")
     for name in ("krig", "custom"):
         s = result[name]
         watts = "n/a" if s["average_gpu_watts"] is None else f"{s['average_gpu_watts']:.2f}"
-        print(f"| {name} | {s['normalized_accepted_work_per_hour']:.6g} | "
-              f"{s['normalized_stale_work_per_hour']:.6g} | {s['accepted']} | "
-              f"{s['stale']} | {s['rejected']} | {watts} |")
+        print(
+            f"| {name} | {s['pool_inferred_ths']:.6g} | "
+            f"{s['normalized_accepted_work_per_hour']:.6g} | "
+            f"{s['normalized_stale_work_per_hour']:.6g} | {s['accepted']} | "
+            f"{s['stale']} | {s['rejected']} | {watts} |"
+        )
 
 
 if __name__ == "__main__":
