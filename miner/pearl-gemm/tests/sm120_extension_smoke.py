@@ -40,6 +40,20 @@ def main() -> None:
     assert device_result["target_tests"] == 1
     assert device_result["winners"] == 1 and device_result["cuda_errors"] == 0, device_result
     assert device_result["winner_descriptors"][0]["generation"] == 9
+
+    # WMMA is the v08 production default. Run the DP4A fallback over the exact
+    # same operands and require an identical jackpot hash, not merely a winner.
+    wmma_hash = device_result["winner_descriptors"][0]["jackpot_hash"]
+    os.environ["PEARL_SM120_WMMA"] = "0"
+    dp4a_result = pearl_sm120_cuda.search_device(
+        candidate_a, b_transposed, key.cuda(), target.cuda(), 16, 16, 2048, 10
+    )
+    assert dp4a_result["candidates"] == 1
+    assert dp4a_result["target_tests"] == 1
+    assert dp4a_result["winners"] == 1 and dp4a_result["cuda_errors"] == 0, dp4a_result
+    assert dp4a_result["winner_descriptors"][0]["generation"] == 10
+    assert dp4a_result["winner_descriptors"][0]["jackpot_hash"] == wmma_hash
+    os.environ["PEARL_SM120_WMMA"] = "1"
     # Exercise the production-shaped entry point: base operands and canonical noise
     # seeds enter the extension, and noised operands are materialized on the GPU.
     rows = torch.arange(16, device="cuda", dtype=torch.int32)
