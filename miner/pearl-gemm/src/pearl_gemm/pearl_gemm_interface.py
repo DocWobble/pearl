@@ -3,7 +3,11 @@ import os
 import pearl_gemm_cuda
 import torch
 
-from .sm120_telemetry import Sm120SearchTelemetry, format_sm120_snapshot
+from .sm120_telemetry import (
+    Sm120SearchTelemetry,
+    format_sm120_rate,
+    format_sm120_snapshot,
+)
 
 
 # vLLM performs one or more large synthetic forwards while bringing its HTTP
@@ -605,7 +609,9 @@ def noisy_gemm(
                 _sm120_active_announced = True
 
             if snapshot.should_log:
-                print(format_sm120_snapshot(snapshot), flush=True)
+                print(format_sm120_rate(snapshot), flush=True)
+                if os.environ.get("PEARL_SM120_VERBOSE_TELEMETRY") == "1":
+                    print(format_sm120_snapshot(snapshot), flush=True)
 
             if sm120_result["winner_descriptors"]:
                 sm120_winner = sm120_result["winner_descriptors"][0]
