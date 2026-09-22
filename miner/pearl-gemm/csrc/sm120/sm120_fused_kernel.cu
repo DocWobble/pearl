@@ -42,7 +42,7 @@ __global__ void fused_search_kernel(const int8_t* candidates_a, const int8_t* b_
   const int8_t* b_tile = b_transposed + uint64_t(tile_col * 16) * config.k;
   const uint32_t row = lane / 16, col = lane % 16;
   int32_t cumulative = 0;
-  __shared__ uint32_t folded[256];
+  __shared__ uint32_t warp_folded[8];
   __shared__ uint32_t transcript[16];
   __shared__ uint8_t final_hash[32];
   if (lane < 16) transcript[lane] = 0;
@@ -59,13 +59,23 @@ __global__ void fused_search_kernel(const int8_t* candidates_a, const int8_t* b_
           b_tile + col * config.k + x);
       cumulative = __dp4a(*a4, *b4, cumulative);
     }
-    folded[lane] = static_cast<uint32_t>(cumulative);
+    uint32_t folded = static_cast<uint32_t>(cumulative);
+    constexpr uint32_t kFullWarpMask = 0xffffffffu;
+    for (uint32_t offset = 16; offset; offset >>= 1)
+      folded ^= __shfl_down_sync(kFullWarpMask, folded, offset);
+    if ((lane & 31u) == 0) warp_folded[lane >> 5] = folded;
     __syncthreads();
-    for (uint32_t stride = 128; stride; stride >>= 1) {
-      if (lane < stride) folded[lane] ^= folded[lane + stride];
-      __syncthreads();
+
+    // Warp 0 reduces the eight warp partials. Lanes 8..31 contribute zero so
+    // the ordinary full-warp shuffle reduction is exact and branch-free.
+    if (lane < 32) {
+      uint32_t block_folded = lane < 8 ? warp_folded[lane] : 0u;
+      for (uint32_t offset = 16; offset; offset >>= 1)
+        block_folded ^= __shfl_down_sync(kFullWarpMask, block_folded, offset);
+      if (lane == 0)
+        transcript[chunk % 16] =
+            rotl32(transcript[chunk % 16], 13) ^ block_folded;
     }
-    if (lane == 0) transcript[chunk % 16] = rotl32(transcript[chunk % 16], 13) ^ folded[0];
     __syncthreads();
   }
   if (lane == 0) {
