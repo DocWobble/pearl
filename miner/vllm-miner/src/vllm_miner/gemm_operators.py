@@ -218,6 +218,7 @@ def pearl_gemm_noisy(
         skip_reduction=False,  # skip_reduction
         skip_denoising=False,  # skip_denoising
         sm120_generation=sm120_generation,
+        sm120_adjusted_target=adjusted_target,
     )
 
     if submit_block:
