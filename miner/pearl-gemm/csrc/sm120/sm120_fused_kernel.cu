@@ -26,9 +26,10 @@ __device__ void record_deep_tail(const uint8_t hash[32], DeviceWinnerQueue* queu
   atomicAdd(reinterpret_cast<unsigned long long*>(&queue->tail_d24), 1ULL);
 }
 
-__global__ void fused_search_kernel(const int8_t* candidates_a, const int8_t* b_transposed,
+__global__ void fused_search_kernel(const int8_t* __restrict__ candidates_a,
+                                    const int8_t* __restrict__ b_transposed,
                                     uint32_t candidate_count, DeviceSearchConfig config,
-                                    DeviceWinnerQueue* queue) {
+                                    DeviceWinnerQueue* __restrict__ queue) {
   const uint32_t lane = threadIdx.x;
   const uint32_t tiles_w = config.n / 16;
   const uint32_t tiles = (config.m / 16) * tiles_w;
@@ -47,12 +48,13 @@ __global__ void fused_search_kernel(const int8_t* candidates_a, const int8_t* b_
   __shared__ uint8_t final_hash[32];
   if (lane < 16) transcript[lane] = 0;
   __syncthreads();
-  for (uint32_t p = 0, chunk = 0; p < config.k; p += config.rank, ++chunk) {
+  for (uint32_t p = 0, chunk = 0; p < config.k; p += 128, ++chunk) {
     // SM120 has native signed INT8 DP4A.  Rank is exactly 128 and K is a
     // multiple of 128, so each checkpoint boundary is also 4-byte aligned.
     // Grouping four products changes only instruction count, not Pearl's
     // cumulative INT32 state or the rank-boundary transcript.
-    for (uint32_t x = p; x < p + config.rank; x += 4) {
+    #pragma unroll 4
+    for (uint32_t x = p; x < p + 128; x += 4) {
       const auto* a4 = reinterpret_cast<const int32_t*>(
           a + row * config.k + x);
       const auto* b4 = reinterpret_cast<const int32_t*>(
