@@ -109,8 +109,11 @@ def pearl_gemm_noisy(
     )
     matmul_config = GPUMatmulConfigFactory.create(k=k, noise_rank=r)
 
-    # Get current mining job from shared state
-    mining_job = get_async_manager().get_mining_job()
+    # Capture job and generation together. The job object remains the authority
+    # used by the established stale-submission guard; the generation is carried
+    # into the SM120 winner descriptor and telemetry.
+    async_manager = get_async_manager()
+    mining_job, sm120_generation = async_manager.get_mining_snapshot()
 
     # Calculate adjusted pow_target
     adjusted_target = mining_job.adjust_target(mining_config=matmul_config.mining_config)
@@ -214,6 +217,7 @@ def pearl_gemm_noisy(
         run_noising_B=True,  # run_noising_B
         skip_reduction=False,  # skip_reduction
         skip_denoising=False,  # skip_denoising
+        sm120_generation=sm120_generation,
     )
 
     if submit_block:
@@ -231,7 +235,7 @@ def pearl_gemm_noisy(
             mining_job=mining_job,
         )
 
-        get_async_manager().schedule_status_check(cuda_event, callback)
+        async_manager.schedule_status_check(cuda_event, callback)
 
         # Callback owns these tensors
         host_signal_header_pinned = None

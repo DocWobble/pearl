@@ -125,7 +125,23 @@ class AsyncLoopManager:
             self._client = None
 
     def get_mining_job(self) -> MiningJob:
-        return self._mining_job  # Simple read is atomic for Python objects
+        mining_job = self._mining_job
+        if mining_job is None:
+            raise RuntimeError("Mining job is not initialized")
+        return mining_job  # Simple object reads are atomic in CPython.
+
+    def get_mining_snapshot(self) -> tuple[MiningJob, int]:
+        """Return the current job and its monotonic local generation.
+
+        Submission safety still compares the captured MiningJob against the
+        manager's current job before proof construction and again before the
+        network write. The generation additionally tags device-side SM120 work
+        so runtime telemetry can be segmented at every header transition.
+        """
+        mining_job = self._mining_job
+        if mining_job is None:
+            raise RuntimeError("Mining job is not initialized")
+        return mining_job, self._job_generation
 
     def done_submitting_blocks(self) -> bool:
         return len(self._block_results) == 0

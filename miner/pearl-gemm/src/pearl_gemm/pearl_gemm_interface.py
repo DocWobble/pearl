@@ -3,6 +3,8 @@ import os
 import pearl_gemm_cuda
 import torch
 
+from .sm120_telemetry import Sm120SearchTelemetry, format_sm120_snapshot
+
 
 # vLLM performs one or more large synthetic forwards while bringing its HTTP
 # server up.  Those forwards validate model execution but are not mining work;
@@ -10,7 +12,10 @@ import torch
 # this bounded allowance, after which every eligible production forward enters
 # the SM120 search path.
 _sm120_warmup_remaining = int(os.environ.get("PEARL_SM120_WARMUP_SKIP", "0"))
-_sm120_search_calls = 0
+_sm120_telemetry = Sm120SearchTelemetry(
+    log_every=max(1, int(os.environ.get("PEARL_SM120_LOG_EVERY", "64")))
+)
+_sm120_active_announced = False
 
 BLAKE3_DIGEST_SIZE_U32 = 8
 
@@ -402,6 +407,7 @@ def noisy_gemm(
     skip_denoising: bool = False,
     inner_hash_counter: torch.Tensor | None = None,
     enable_debug: bool = False,
+    sm120_generation: int = 0,
 ):
     """Perform noising, matmul, and denoising.
 
@@ -479,41 +485,75 @@ def noisy_gemm(
         skip_denoising: Whether to disable the denoising epilogue.
         inner_hash_counter: Optional tensor to count inner hashes (for testing/debugging).
         enable_debug: If True, enables debug mode for inner hash counting validation.
+        sm120_generation: Monotonic mining-job generation captured with the job header.
+            Used by the SM120 winner descriptor and alpha telemetry; the established
+            host-side stale-job guard remains authoritative for submission.
     """
     sm120_winner = None
-    global _sm120_warmup_remaining, _sm120_search_calls
-    sm120_dispatch = (
-        os.environ.get("PEARL_SM120_BACKEND") == "1"
-        and os.environ.get("PEARL_SM120_FUSED") == "1"
-        and os.environ.get("PEARL_SM120_SEARCH_ONLY") == "1"
-        and A.is_cuda
-        and A.device == B.device
-        and torch.cuda.get_device_capability(A.device) == (12, 0)
-        and A.shape[0] >= 16
-        and B.shape[0] >= 16
-        and A.shape[1] >= 16 * 128
-        and A.shape[1] <= 65536
-        and A.shape[1] % 128 == 0
-        and A.shape[1] == B.shape[1]
-        and EAL.shape[1] == 128
-    )
+    global _sm120_warmup_remaining, _sm120_active_announced
+
+    sm120_requested = os.environ.get("PEARL_SM120_BACKEND") == "1"
+    same_cuda_device = A.is_cuda and B.is_cuda and A.device == B.device
+    capability = torch.cuda.get_device_capability(A.device) if same_cuda_device else None
+    sm120_device = capability == (12, 0)
+
+    # This fork must never silently route an RTX 50-series mining GEMM back into
+    # the historical Hopper-only path.  Fail closed on configuration errors and
+    # use the architecture-neutral inference result for geometries that cannot
+    # form complete Pearl 16x16 proof tiles.
+    if sm120_device and not sm120_requested:
+        raise RuntimeError(
+            "SM120 mining path detected but PEARL_SM120_BACKEND is not enabled; "
+            "set PEARL_SM120_BACKEND=1, PEARL_SM120_FUSED=1, and "
+            "PEARL_SM120_SEARCH_ONLY=1"
+        )
+    if sm120_requested and capability is not None and not sm120_device:
+        raise RuntimeError(f"PEARL_SM120_BACKEND requested on unsupported CUDA capability {capability}")
+
+    if sm120_requested and sm120_device:
+        missing_flags = [
+            name
+            for name in ("PEARL_SM120_FUSED", "PEARL_SM120_SEARCH_ONLY")
+            if os.environ.get(name) != "1"
+        ]
+        if missing_flags:
+            raise RuntimeError(
+                "SM120 alpha requires explicit feature flags: " + ", ".join(missing_flags)
+            )
+
+        search_geometry = (
+            A.shape[0] >= 16
+            and B.shape[0] >= 16
+            and A.shape[0] % 16 == 0
+            and B.shape[0] % 16 == 0
+            and A.shape[1] >= 16 * 128
+            and A.shape[1] <= 65536
+            and A.shape[1] % 128 == 0
+            and A.shape[1] == B.shape[1]
+            and EAL.shape[1] == 128
+        )
+        if not search_geometry:
+            C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
+            return
+
+    sm120_dispatch = sm120_requested and sm120_device
     if sm120_dispatch:
         try:
             import pearl_sm120_cuda
             from .sm120_reference import canonical_integer_noising
 
             # Server profiling calls exercise every mining layer but carry no
-            # live job.  Preserve exact inference semantics and reserve the
-            # canonical proof construction for work after readiness.
+            # live job. Preserve exact inference semantics and reserve the
+            # canonical proof scan for work after readiness.
             if _sm120_warmup_remaining > 0:
                 _sm120_warmup_remaining -= 1
                 C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
                 return
 
             # The Hopper TMA/WGMMA noising kernels are not an SM120 runtime
-            # dependency.  Materialize Pearl's canonical integer definition
-            # first; the small SM120 kernels can later replace this oracle
-            # after byte-for-byte parity is established.
+            # dependency. Materialize Pearl's canonical integer definition
+            # first; the dedicated SM120 noising kernel can replace this oracle
+            # only after byte-for-byte parity is demonstrated in the live path.
             sm120_apea, sm120_bpeb, sm120_axebl, sm120_earxbpeb = canonical_integer_noising(
                 A, B, EAL, EBR, EAR_R_major, EBL_R_major
             )
@@ -521,43 +561,73 @@ def noisy_gemm(
             BpEB.copy_(sm120_bpeb)
             AxEBL_fp16.copy_((sm120_axebl.to(torch.float32) * (2**-14)).to(torch.float16))
             EARxBpEB_fp16.copy_((sm120_earxbpeb.to(torch.float32) * (2**-12)).to(torch.float16))
+
             key_cpu = pow_key.detach().contiguous().view(torch.uint8).cpu()
             target_cpu = pow_target.detach().contiguous().view(torch.uint8).cpu()
-            # The dense reference is valid for every matrix extent.  The
-            # current SM120 tile search is deliberately restricted to its
-            # exact 16x16 proof geometry; an irregular inference batch must
-            # never fall through into Hopper TMA/WGMMA code.
-            if A.shape[0] % 16 == 0 and B.shape[0] % 16 == 0:
-                sm120_result = pearl_sm120_cuda.search(
-                    ApEA.unsqueeze(0), BpEB, key_cpu, target_cpu,
-                    A.shape[0], B.shape[0], A.shape[1], 0
-                )
-                if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
-                    raise RuntimeError(f"SM120 search failed: {sm120_result}")
-                _sm120_search_calls += 1
-                if _sm120_search_calls % 64 == 0 or sm120_result["winner_descriptors"]:
-                    print(
-                        "SM120_SEARCH "
-                        f"call={_sm120_search_calls} m={A.shape[0]} n={B.shape[0]} k={A.shape[1]} "
-                        f"candidates={sm120_result['candidates']} "
-                        f"winners={sm120_result['winners']}",
-                        flush=True,
+            sm120_result = pearl_sm120_cuda.search(
+                ApEA.unsqueeze(0),
+                BpEB,
+                key_cpu,
+                target_cpu,
+                A.shape[0],
+                B.shape[0],
+                A.shape[1],
+                int(sm120_generation),
+            )
+
+            if sm120_result["cuda_errors"] or sm120_result["winner_overflow"]:
+                raise RuntimeError(f"SM120 search failed: {sm120_result}")
+
+            for descriptor in sm120_result["winner_descriptors"]:
+                if int(descriptor["generation"]) != int(sm120_generation):
+                    raise RuntimeError(
+                        "SM120 winner generation mismatch: "
+                        f"gpu={descriptor['generation']} host={sm120_generation}"
                     )
-                if sm120_result["winner_descriptors"]:
-                    sm120_winner = sm120_result["winner_descriptors"][0]
+
+            target_int = int.from_bytes(bytes(target_cpu.tolist()), "little")
+            snapshot = _sm120_telemetry.record(
+                generation=int(sm120_generation),
+                m=int(A.shape[0]),
+                n=int(B.shape[0]),
+                k=int(A.shape[1]),
+                target=target_int,
+                result=sm120_result,
+            )
+
+            if not _sm120_active_announced:
+                print(
+                    "SM120_ALPHA_ACTIVE "
+                    f"device={torch.cuda.get_device_name(A.device)!r} capability=12.0 "
+                    f"generation={sm120_generation} log_every={_sm120_telemetry.log_every}",
+                    flush=True,
+                )
+                _sm120_active_announced = True
+
+            if snapshot.should_log:
+                print(format_sm120_snapshot(snapshot), flush=True)
+
+            if sm120_result["winner_descriptors"]:
+                sm120_winner = sm120_result["winner_descriptors"][0]
+
             # The canonical inference value is A @ B.T with per-row scales.
-            # Returning it here deliberately prevents a later call into the
-            # legacy SM90 TMA/WGMMA main kernel.
+            # Returning here deliberately prevents a later call into the legacy
+            # SM90 TMA/WGMMA main kernel.
             C.copy_(_canonical_scaled_gemm(A, B, A_scales, B_scales, C.dtype))
             if sm120_winner is not None:
                 pearl_sm120_cuda.signal_header(
                     host_signal_header_pinned,
-                    A.shape[0], B.shape[0], A.shape[1],
-                    sm120_winner["tile_row"], sm120_winner["tile_col"],
+                    A.shape[0],
+                    B.shape[0],
+                    A.shape[1],
+                    sm120_winner["tile_row"],
+                    sm120_winner["tile_col"],
                 )
             return
-        except ImportError:
-            sm120_dispatch = False
+        except ImportError as exc:
+            raise RuntimeError(
+                "PEARL_SM120_BACKEND=1 but the pearl_sm120_cuda extension is unavailable"
+            ) from exc
 
     pearl_gemm_cuda.noisy_gemm(
         A,
