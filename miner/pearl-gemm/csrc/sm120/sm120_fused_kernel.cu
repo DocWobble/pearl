@@ -48,8 +48,17 @@ __global__ void fused_search_kernel(const int8_t* candidates_a, const int8_t* b_
   if (lane < 16) transcript[lane] = 0;
   __syncthreads();
   for (uint32_t p = 0, chunk = 0; p < config.k; p += config.rank, ++chunk) {
-    for (uint32_t x = p; x < p + config.rank; ++x)
-      cumulative += int32_t(a[row * config.k + x]) * int32_t(b_tile[col * config.k + x]);
+    // SM120 has native signed INT8 DP4A.  Rank is exactly 128 and K is a
+    // multiple of 128, so each checkpoint boundary is also 4-byte aligned.
+    // Grouping four products changes only instruction count, not Pearl's
+    // cumulative INT32 state or the rank-boundary transcript.
+    for (uint32_t x = p; x < p + config.rank; x += 4) {
+      const auto* a4 = reinterpret_cast<const int32_t*>(
+          a + row * config.k + x);
+      const auto* b4 = reinterpret_cast<const int32_t*>(
+          b_tile + col * config.k + x);
+      cumulative = __dp4a(*a4, *b4, cumulative);
+    }
     folded[lane] = static_cast<uint32_t>(cumulative);
     __syncthreads();
     for (uint32_t stride = 128; stride; stride >>= 1) {
