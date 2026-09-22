@@ -30,6 +30,7 @@ from .pearl_gemm_interface import (
     noise_B,
     noise_gen,
     noisy_gemm,
+    sm120_search_noised_operands,
     tensor_hash,
 )
 
@@ -52,6 +53,7 @@ __all__ = [
     "noise_B",
     "noise_gen",
     "noisy_gemm",
+    "sm120_search_noised_operands",
     "pearl_gemm_interface",
     "tensor_hash",
 ]
