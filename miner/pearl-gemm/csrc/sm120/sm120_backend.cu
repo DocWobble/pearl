@@ -26,7 +26,8 @@ bool flag_enabled(const char* name) {
 SearchResult search_job_impl(const JobContext& job, const CandidateBatch& candidates,
                              DeviceScratch& scratch,
                              const uint8_t* jackpot_key_device,
-                             const uint8_t* share_target_device) {
+                             const uint8_t* share_target_device,
+                             cudaStream_t caller_stream) {
   SearchResult result{};
   const bool reuse_alloc = flag_enabled("PEARL_SM120_REUSE_ALLOC");
   if (!reuse_alloc) scratch.release();
@@ -58,7 +59,9 @@ SearchResult search_job_impl(const JobContext& job, const CandidateBatch& candid
     search_candidates.b_noised_t = scratch.cached_b();
   }
 
-  const cudaStream_t stream = scratch.streams_enabled ? scratch.stream_compute : nullptr;
+  const cudaStream_t stream =
+      caller_stream != nullptr ? caller_stream :
+      (scratch.streams_enabled ? scratch.stream_compute : nullptr);
   constexpr size_t kQueueHeaderBytes = offsetof(DeviceWinnerQueue, winners);
 
   if (cudaMemsetAsync(scratch.winner_queue, 0, kQueueHeaderBytes, stream) != cudaSuccess) {
@@ -242,21 +245,22 @@ void DeviceScratch::release() {
 
 SearchResult search_job(const JobContext& job, const CandidateBatch& candidates,
                         DeviceScratch& scratch) {
-  return search_job_impl(job, candidates, scratch, nullptr, nullptr);
+  return search_job_impl(job, candidates, scratch, nullptr, nullptr, nullptr);
 }
 
 SearchResult search_job_device_params(const JobContext& job,
                                       const CandidateBatch& candidates,
                                       DeviceScratch& scratch,
                                       const uint8_t* jackpot_key_device,
-                                      const uint8_t* share_target_device) {
+                                      const uint8_t* share_target_device,
+                                      cudaStream_t stream) {
   if (jackpot_key_device == nullptr || share_target_device == nullptr) {
     SearchResult result{};
     result.metrics.cuda_errors = 1;
     return result;
   }
   return search_job_impl(job, candidates, scratch, jackpot_key_device,
-                         share_target_device);
+                         share_target_device, stream);
 }
 
 SearchResult search_job(const JobContext& job, const CandidateBatch& candidates) {
