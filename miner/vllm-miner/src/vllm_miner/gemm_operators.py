@@ -1,3 +1,5 @@
+import os
+
 import torch
 from miner_base.commitment_hash import CommitmentHasher
 from miner_base.gpu_matmul_config import GPUMatmulConfigFactory
@@ -10,6 +12,7 @@ from pearl_gemm import (
     make_pow_target_tensor,
     noise_gen,
     noisy_gemm,
+    sm120_search_noised_operands,
     tensor_hash,
 )
 
@@ -152,7 +155,99 @@ def pearl_gemm_noisy(
         salted_dims=(m, n) if mining_job.cert_version.uses_salted_seeds else None,
     )
 
-    # Generate noise factors from commitment hashes
+    sm120_direct = (
+        os.environ.get("PEARL_SM120_BACKEND") == "1"
+        and a.is_cuda
+        and b.is_cuda
+        and a.device == b.device
+        and torch.cuda.get_device_capability(a.device) == (12, 0)
+        and r == 128
+        and m >= 16
+        and n >= 16
+        and m % 16 == 0
+        and n % 16 == 0
+        and k >= 16 * r
+        and k <= 65536
+        and k % r == 0
+    )
+
+    if sm120_direct:
+        # The dedicated SM120 generator has already passed canonical Rust
+        # fixture parity for selected rows/columns, transcripts, and final
+        # keyed BLAKE3. Generate the complete row/column set directly and
+        # never enter Pearl's historical Hopper TMA noising pipeline.
+        import pearl_sm120_cuda
+
+        row_indices = torch.arange(m, device=a.device, dtype=torch.int32)
+        col_indices = torch.arange(n, device=a.device, dtype=torch.int32)
+        a_seed_cpu = commitment_hash_A_tensor.detach().contiguous().cpu()
+        b_seed_cpu = commitment_hash_B_tensor.detach().contiguous().cpu()
+        noise_a, noise_b_t = pearl_sm120_cuda.noise(
+            a_seed_cpu,
+            b_seed_cpu,
+            row_indices,
+            col_indices,
+            k,
+            r,
+        )
+        ApEA = (A + noise_a).contiguous()
+        BpEB = (B + noise_b_t).contiguous()
+
+        host_signal_header_pinned = get_pinned_pool().acquire()
+        pow_target_tensor = make_pow_target_tensor(adjusted_target)
+
+        search_result = sm120_search_noised_operands(
+            ApEA,
+            BpEB,
+            commitment_hash_A_tensor,
+            pow_target_tensor,
+            host_signal_header_pinned,
+            sm120_generation,
+            adjusted_target,
+        )
+
+        # Inference output is the canonical unnoised A @ B.T result. The proof
+        # search above is side-effect-free unless it writes a winner descriptor.
+        C = pearl_gemm_vanilla(
+            A,
+            B,
+            scale_a=A_scales,
+            scale_b=B_scales,
+            out_dtype=out_dtype,
+        )
+
+        if submit_block and search_result is not None:
+            cuda_event = torch.cuda.Event()
+            cuda_event.record()
+            callback = StatusCheckCallback(
+                host_signal_header_pinned=host_signal_header_pinned,
+                commitment_hash_A_tensor=commitment_hash_A_tensor,
+                commitment_hash_B_tensor=commitment_hash_B_tensor,
+                A=A,
+                B=B,
+                mining_job=mining_job,
+            )
+            async_manager.schedule_status_check(cuda_event, callback)
+            host_signal_header_pinned = None
+            commitment_hash_A_tensor = None
+            commitment_hash_B_tensor = None
+        else:
+            get_pinned_pool().release(host_signal_header_pinned)
+
+        del pow_target_tensor
+        del ApEA
+        del BpEB
+        del noise_a
+        del noise_b_t
+        del row_indices
+        del col_indices
+        del key_tensor
+        del A_tensor_hash
+        del B_tensor_hash
+        del tensor_hash_scratchpad
+        return C
+
+    # Legacy path for architectures where Pearl's original noising kernels are valid.
     (
         EAL,
         EAR_R_major,
