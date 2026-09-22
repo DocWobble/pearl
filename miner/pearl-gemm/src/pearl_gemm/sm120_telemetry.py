@@ -35,6 +35,8 @@ class Sm120TelemetrySnapshot:
     total_target_tests_per_second: float
     job_expected_hits: float
     total_expected_hits: float
+    job_expected_opens_per_second: float
+    total_expected_opens_per_second: float
     job_mean_target_hit_seconds: float | None
     total_mean_target_hit_seconds: float | None
     valid_candidate_work: int
@@ -209,6 +211,12 @@ class Sm120SearchTelemetry:
             ),
             job_expected_hits=self._job_expected_hits,
             total_expected_hits=self._total_expected_hits,
+            job_expected_opens_per_second=self._rate(
+                self._job_expected_hits, self._job_start_ns, now
+            ),
+            total_expected_opens_per_second=self._rate(
+                self._total_expected_hits, self._start_ns, now
+            ),
             job_mean_target_hit_seconds=self._mean_hit_seconds(
                 self._job_expected_hits, self._job_start_ns, now
             ),
@@ -248,6 +256,7 @@ def format_sm120_rate(snapshot: Sm120TelemetrySnapshot) -> str:
         f"rolling_ths={snapshot.rolling_hashrate_ths:.6f} "
         f"job_ths={snapshot.job_hashrate_ths:.6f} "
         f"tiles_s={snapshot.total_target_tests_per_second:.3f} "
+        f"expected_opens_s={snapshot.total_expected_opens_per_second:.9e} "
         f"candidates={snapshot.candidates} "
         f"tail16_ratio={snapshot.tail_ratios_total[16]:.4f} "
         f"tail20_ratio={snapshot.tail_ratios_total[20]:.4f} "
@@ -275,8 +284,10 @@ def format_sm120_snapshot(snapshot: Sm120TelemetrySnapshot) -> str:
         f"rolling_ths={snapshot.rolling_hashrate_ths:.9f} "
         f"job_ths={snapshot.job_hashrate_ths:.9f} "
         f"job_expected_hits={snapshot.job_expected_hits:.9e} "
+        f"job_expected_opens_s={snapshot.job_expected_opens_per_second:.9e} "
         f"job_mean_hit_s={_fmt_seconds(snapshot.job_mean_target_hit_seconds)} "
         f"total_expected_hits={snapshot.total_expected_hits:.9e} "
+        f"total_expected_opens_s={snapshot.total_expected_opens_per_second:.9e} "
         f"total_mean_hit_s={_fmt_seconds(snapshot.total_mean_target_hit_seconds)} "
         f"valid_work={snapshot.valid_candidate_work} "
         f"total_valid_work={snapshot.total_valid_candidate_work} "
