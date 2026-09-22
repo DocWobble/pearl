@@ -30,6 +30,111 @@ def _canonical_scaled_gemm(A, B, A_scales, B_scales, dtype):
         product = torch._int_mm(A, B.t().contiguous()).to(torch.float32)
     return (product * A_scales[:, None] * B_scales[None, :]).to(dtype)
 
+def sm120_search_noised_operands(
+    ApEA: torch.Tensor,
+    BpEB: torch.Tensor,
+    pow_key: torch.Tensor,
+    pow_target: torch.Tensor,
+    host_signal_header_pinned: torch.Tensor,
+    generation: int,
+    adjusted_target: int,
+) -> dict | None:
+    """Run the live SM120 search on already-canonical noised operands.
+
+    This is intentionally upstream of the legacy Hopper noisy-GEMM pipeline so
+    SM120 never needs to enter noise_gen/noise_A/noise_B merely to reach the
+    custom search backend.
+    """
+    global _sm120_warmup_remaining, _sm120_active_announced
+
+    if _sm120_warmup_remaining > 0:
+        _sm120_warmup_remaining -= 1
+        return None
+
+    if not (
+        ApEA.is_cuda
+        and BpEB.is_cuda
+        and ApEA.device == BpEB.device
+        and torch.cuda.get_device_capability(ApEA.device) == (12, 0)
+    ):
+        raise RuntimeError("sm120_search_noised_operands requires one SM120 CUDA device")
+
+    if os.environ.get("PEARL_SM120_BACKEND") != "1":
+        raise RuntimeError("SM120 search requested without PEARL_SM120_BACKEND=1")
+    missing = [
+        name
+        for name in ("PEARL_SM120_FUSED", "PEARL_SM120_SEARCH_ONLY")
+        if os.environ.get(name) != "1"
+    ]
+    if missing:
+        raise RuntimeError("SM120 search missing required flags: " + ", ".join(missing))
+
+    import pearl_sm120_cuda
+
+    os.environ.setdefault("PEARL_SM120_REUSE_ALLOC", "1")
+    os.environ.setdefault("PEARL_SM120_WMMA", "1")
+
+    key_device = pow_key.detach().contiguous().view(torch.uint8)
+    target_device = pow_target.detach().contiguous().view(torch.uint8)
+    result = pearl_sm120_cuda.search_device(
+        ApEA.unsqueeze(0),
+        BpEB,
+        key_device,
+        target_device,
+        int(ApEA.shape[0]),
+        int(BpEB.shape[0]),
+        int(ApEA.shape[1]),
+        int(generation),
+    )
+
+    if result["cuda_errors"] or result["winner_overflow"]:
+        raise RuntimeError(f"SM120 search failed: {result}")
+
+    for descriptor in result["winner_descriptors"]:
+        if int(descriptor["generation"]) != int(generation):
+            raise RuntimeError(
+                "SM120 winner generation mismatch: "
+                f"gpu={descriptor['generation']} host={generation}"
+            )
+
+    snapshot = _sm120_telemetry.record(
+        generation=int(generation),
+        m=int(ApEA.shape[0]),
+        n=int(BpEB.shape[0]),
+        k=int(ApEA.shape[1]),
+        target=int(adjusted_target),
+        result=result,
+    )
+
+    if not _sm120_active_announced:
+        print(
+            "SM120_ALPHA_ACTIVE "
+            f"device={torch.cuda.get_device_name(ApEA.device)!r} capability=12.0 "
+            f"generation={generation} log_every={_sm120_telemetry.log_every}",
+            flush=True,
+        )
+        _sm120_active_announced = True
+
+    if snapshot.should_log:
+        from .sm120_telemetry import format_sm120_rate
+
+        print(format_sm120_rate(snapshot), flush=True)
+        if os.environ.get("PEARL_SM120_VERBOSE_TELEMETRY") == "1":
+            print(format_sm120_snapshot(snapshot), flush=True)
+
+    if result["winner_descriptors"]:
+        winner = result["winner_descriptors"][0]
+        pearl_sm120_cuda.signal_header(
+            host_signal_header_pinned,
+            ApEA.shape[0],
+            BpEB.shape[0],
+            ApEA.shape[1],
+            winner["tile_row"],
+            winner["tile_col"],
+        )
+
+    return result
+
 
 def make_pow_target_tensor(value: int, device="cuda") -> torch.Tensor:
     """Create a pow_target tensor from a uint256 integer value."""
